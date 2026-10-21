@@ -85,6 +85,9 @@ export function generateStepsFromSimulation(
       if (b.twistType === "bird_body") {
         birdCount += 1;
       }
+      if (b.lockToJoint && touchesEnd) {
+        lockPairReturns += 1;
+      }
       if (
         b.twistType === "apple_link" ||
         b.twistType === "cut_tail" ||
@@ -329,6 +332,17 @@ export function generateStepsFromSimulation(
       measurementText = `${b1.lengthInches}″ + ${b2.lengthInches}″ opposing pinch twists`;
       diagramType = b1.twistType === "toe" ? "toe_twist" : "pinch_twist";
       twistType = b1.twistType;
+    } else if (b.lockToJoint && bubbles[b.lockToJoint.bubbleIndex]) {
+      const tb = bubbles[b.lockToJoint.bubbleIndex];
+      const tBal = balloons.find((x) => x.id === tb.balloonId);
+      const where = b.lockToJoint.end === "end" ? `the twist after ${tb.label}` : `the joint before ${tb.label}`;
+      title = `Twist ${b.label} Into ${tb.label}'s Joint`;
+      description = `Measure a ${b.lengthInches}″ (${inchesToFingers(b.lengthInches)}-finger) bubble for ${b.label}, bring its twist across to ${where}${
+        tBal && tBal.id !== bal.id ? ` on the ${tBal.size} ${tBal.colorName}` : ""
+      }, and twist the two joints together 2–3 turns so they hold each other.`;
+      measurementText = `${b.lengthInches}″ (${inchesToFingers(b.lengthInches)} fingers) · joint twisted into ${tb.label}`;
+      diagramType = "lock_twist";
+      twistType = "lock";
     } else if (b.lockToBubbleStart !== undefined && bubbles[b.lockToBubbleStart]) {
       const targetBubble = bubbles[b.lockToBubbleStart];
       title = `Fold & Lock ${b.label} Into ${targetBubble.label} Joint`;

@@ -30,6 +30,7 @@ import {
   autoStabilizeSculpture,
   defaultDiameterForSize,
   getStepVisibility,
+  vDist,
 } from "@/lib/balloonLayout";
 import { computeAirBudget, defaultTailInches } from "@/lib/balloonAir";
 import {
@@ -37,6 +38,8 @@ import {
   deleteBubbles,
   equalizeLengths,
   insertBubbles,
+  JointSide,
+  joinJoints,
   moveBubble,
   newBubbleId,
   releaseTwists,
@@ -298,7 +301,46 @@ export default function BalloonAppPage() {
     const b = placeOfJoint(selectedJointIds[1]);
     const balloonId = Array.from(a.keys()).find((id) => b.has(id));
     if (!balloonId) {
-      showToast("Those joints are on different balloons. Tie a balloon in with “Add balloon” instead.");
+      // Different balloons: stick the two joints together (joint-to-joint lock)
+      const sidesOf = (jointId: number): JointSide[] => {
+        const j = liveSim.joints[jointId];
+        if (!j) return [];
+        return Array.from(j.balloonIds).flatMap((bid): JointSide[] => {
+          let endBi = -1;
+          let firstBi = Infinity;
+          j.bubbleIndices.forEach((bi) => {
+            if (bubbles[bi]?.balloonId !== bid) return;
+            const lay = liveSim.layouts[bi];
+            if (!lay) return;
+            if (lay.endJointId === jointId && vDist(lay.jointStart, lay.jointEnd) > 0.05) endBi = Math.max(endBi, bi);
+            if (lay.startJointId === jointId) firstBi = Math.min(firstBi, bi);
+          });
+          if (endBi >= 0) return [{ balloonId: bid, ref: { bubbleIndex: endBi, end: "end" }, isKnot: false }];
+          if (Number.isFinite(firstBi)) return [{ balloonId: bid, ref: { bubbleIndex: firstBi, end: "start" }, isKnot: true }];
+          return [];
+        });
+      };
+      const sidesA = sidesOf(selectedJointIds[0]);
+      const sidesB = sidesOf(selectedJointIds[1]);
+      let pair: [JointSide, JointSide] | null = null;
+      for (const sa of sidesA) {
+        const sb = sidesB.find((x) => x.balloonId !== sa.balloonId);
+        if (sb) {
+          pair = [sa, sb];
+          break;
+        }
+      }
+      if (!pair) {
+        showToast("Could not work out which balloons those joints belong to.");
+        return;
+      }
+      const res = joinJoints(currentDesign.balloons, bubbles, pair[0], pair[1]);
+      if ("error" in res) {
+        showToast(res.error);
+        return;
+      }
+      commitDesignState(res.balloons, res.bubbles, res.focusIndex, true);
+      showToast(res.summary);
       return;
     }
     const afterA = a.get(balloonId)!;
@@ -317,7 +359,7 @@ export default function BalloonAppPage() {
     const focus = Array.from({ length: last - first + 1 }, (_, k) => first + k);
     commitDesignState(res.balloons, res.bubbles, focus, true);
     showToast(res.summary);
-  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, placeOfJoint, selectedJointIds, showToast]);
+  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, liveSim, placeOfJoint, selectedJointIds, showToast]);
 
   const handleSelectMany = useCallback((indices: number[]) => {
     setSelectedIndices(indices.length ? indices : [0]);

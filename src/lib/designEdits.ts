@@ -1,4 +1,4 @@
-import { BalloonSpec, BubbleSpec, TwistType } from "@/types/balloon";
+import { BalloonSpec, BubbleSpec, JointAnchorRef, TwistType } from "@/types/balloon";
 import { roundQuarter } from "./balloonLayout";
 
 /**
@@ -59,6 +59,10 @@ export function remapIndexRefs(
     if (b.branchFrom) {
       const mapped = mapIdx(b.branchFrom.bubbleIndex);
       next.branchFrom = mapped !== undefined ? { ...b.branchFrom, bubbleIndex: mapped } : undefined;
+    }
+    if (b.lockToJoint) {
+      const mapped = mapIdx(b.lockToJoint.bubbleIndex);
+      next.lockToJoint = mapped !== undefined && mapped !== i ? { ...b.lockToJoint, bubbleIndex: mapped } : undefined;
     }
     return next;
   });
@@ -208,6 +212,7 @@ export function splitBubble(
       branchFrom: isFirst ? src.branchFrom : undefined,
       // A return-lock belongs to the far end, so it stays on the last piece.
       lockToBubbleStart: isLast ? src.lockToBubbleStart : undefined,
+      lockToJoint: isLast ? src.lockToJoint : undefined,
       positionOffset: isFirst ? src.positionOffset : undefined,
     };
     return piece;
@@ -330,7 +335,7 @@ export function releaseTwists(
   const set = new Set(indices);
   const next = bubbles.map((b, i) =>
     set.has(i)
-      ? { ...b, twistType: "basic" as TwistType, ...twistFlags("basic"), lockToBubbleStart: undefined }
+      ? { ...b, twistType: "basic" as TwistType, ...twistFlags("basic"), lockToBubbleStart: undefined, lockToJoint: undefined }
       : b
   );
   return { balloons, bubbles: next, focusIndex: Math.min(...indices) };
@@ -347,4 +352,64 @@ export function equalizeLengths(
   const set = new Set(valid);
   const next = bubbles.map((b, i) => (set.has(i) ? { ...b, lengthInches: avg } : b));
   return { balloons, bubbles: next, focusIndex: Math.min(...valid) };
+}
+
+/** One side of a joint-to-joint join, resolved from the live layout by the caller. */
+export interface JointSide {
+  balloonId: string;
+  /** The bubble whose end is this joint (or the balloon's first bubble when the joint is its knot) */
+  ref: JointAnchorRef;
+  /** True when this joint is the balloon's nozzle knot */
+  isKnot: boolean;
+}
+
+/**
+ * Stick two joints on different balloons together. The side that is laid
+ * out later carries the link: its bubble's far end is twisted into the other
+ * joint, or, when that side is the balloon's knot, the knot is tied in there.
+ */
+export function joinJoints(
+  balloons: BalloonSpec[],
+  bubbles: BubbleSpec[],
+  a: JointSide,
+  b: JointSide
+): TwistTogetherResult | { error: string } {
+  if (a.balloonId === b.balloonId) return { error: "Those joints are on the same balloon; use the ring / lock pair join." };
+  const [src, dst] = a.ref.bubbleIndex > b.ref.bubbleIndex ? [a, b] : [b, a];
+  const dstBubble = bubbles[dst.ref.bubbleIndex];
+  const dstBal = balloons.find((x) => x.id === dst.balloonId);
+  const where =
+    dst.ref.end === "end" ? `the twist after “${dstBubble?.label}”` : `the knot before “${dstBubble?.label}”`;
+  const onWhat = dstBal ? ` on ${dstBal.name}` : "";
+
+  if (src.isKnot) {
+    const nextBalloons = balloons.map((bal) =>
+      bal.id === src.balloonId ? { ...bal, attachTo: { ...dst.ref } } : bal
+    );
+    const srcBal = balloons.find((x) => x.id === src.balloonId);
+    return {
+      balloons: nextBalloons,
+      bubbles,
+      focusIndex: src.ref.bubbleIndex,
+      summary: `Tied the knot of ${srcBal?.name ?? "the balloon"} into ${where}${onWhat}.`,
+    };
+  }
+
+  const next = bubbles.map((bub) => ({ ...bub }));
+  const i = src.ref.bubbleIndex;
+  next[i] = { ...next[i], lockToJoint: { ...dst.ref }, lockToBubbleStart: undefined };
+  if (next[i].twistType === "lock" || next[i].twistType === "bird_body") {
+    next[i] = { ...next[i], twistType: "basic", ...twistFlags("basic") };
+  }
+  // The balloon continuing past the joined joint splays away from its partner
+  const after = next[i + 1];
+  if (after && after.balloonId === src.balloonId && after.bend === undefined && after.turn === undefined && !after.baseDir) {
+    next[i + 1] = { ...after, turn: 40, bend: 15 };
+  }
+  return {
+    balloons,
+    bubbles: next,
+    focusIndex: i,
+    summary: `Twisted the joint after “${bubbles[i].label}” together with ${where}${onWhat}. The joined twist counts as a lock.`,
+  };
 }

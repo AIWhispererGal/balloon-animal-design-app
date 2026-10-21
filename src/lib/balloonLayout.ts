@@ -163,6 +163,8 @@ export interface BalloonLayoutResult {
 export interface LayoutOptions {
   /** When true, un-anchored twists physically unravel in the returned 3D geometry! */
   releasedHands?: boolean;
+  /** Internal: disables the free-standing look-ahead when laying out one balloon on its own */
+  __noLookAhead?: boolean;
 }
 
 export function radiusForDiameter(diameterInches: number | undefined): number {
@@ -338,6 +340,24 @@ export function computeBalloonLayout(
       pos = anchor.pos;
     } else if (primaryCursor) {
       pos = vAdd(primaryStart, freeStandingOffset(radiusForDiameter(defaultDiameterForSize(bal?.size))));
+      // A free-standing balloon with a joint twisted into another balloon is
+      // moved as a whole so that joint lands on its partner without stretching.
+      const own = indicesByBalloon.get(b.balloonId) ?? [];
+      const linkIdx = own.find((bi) => bubbles[bi].lockToJoint && rawLayouts[bubbles[bi].lockToJoint!.bubbleIndex]);
+      if (linkIdx !== undefined && !options.__noLookAhead) {
+        const target = resolveAnchor(bubbles[linkIdx].lockToJoint);
+        if (target) {
+          const localBubbles = own.map((bi) => ({ ...bubbles[bi], lockToJoint: undefined, branchFrom: undefined }));
+          const localBal = bal ? [{ ...bal, attachTo: undefined }] : [];
+          const sub = computeBalloonLayout(localBal, localBubbles, { __noLookAhead: true });
+          const localEnd = sub.layouts[own.indexOf(linkIdx)]?.jointEnd;
+          const localStart = sub.chains.get(b.balloonId)?.startPos ?? [0, 0, 0];
+          if (localEnd) {
+            pos = vAdd(target.pos, vSub(localStart, localEnd));
+            dir = sub.chains.get(b.balloonId)?.startDir ?? dir;
+          }
+        }
+      }
     }
 
     const cur: ChainCursor = {
@@ -494,6 +514,23 @@ export function computeBalloonLayout(
       chainEnd = [...jointEnd] as Vec3;
       chainDir = [...targetLayout.incomingDir] as Vec3;
       partnerIndex = b.lockToBubbleStart;
+    } else if (
+      b.lockToJoint &&
+      kind !== "loop" &&
+      kind !== "pinch" &&
+      rawLayouts[b.lockToJoint.bubbleIndex]
+    ) {
+      /* ---- 2b. Joint twisted into another joint (any balloon): the two joints become one ---- */
+      const target = resolveAnchor(b.lockToJoint)!;
+      jointStart = [...cur.pos] as Vec3;
+      jointEnd = [...target.pos] as Vec3;
+      const chord = vSub(jointEnd, jointStart);
+      dir = vNorm(chord, applyBendTurn(incomingDir));
+      start = [...jointStart] as Vec3;
+      end = [...jointEnd] as Vec3;
+      mid = vLerp(start, end, 0.5);
+      chainEnd = [...jointEnd] as Vec3;
+      chainDir = dir;
     } else if (birdInfo) {
       /* ---- 3. Bird Body (3-Bubble Roll-Through Bundle) ---- */
       const firstIdx = birdInfo.groupIndices[0];
@@ -641,6 +678,10 @@ export function computeBalloonLayout(
       if (ratio <= 1.55) {
         startJoint.lockReasons.push("Symmetric Fold Return");
       }
+    }
+    if (b.lockToJoint && rawLayouts[b.lockToJoint.bubbleIndex]) {
+      // Two twists stuck together hold each other: that counts as a lock.
+      if (!endJoint.lockReasons.includes("Twisted into joint")) endJoint.lockReasons.push("Twisted into joint");
     }
     if (kind === "pinch" && b.lengthInches <= 2.5 * dIn) {
       startJoint.lockReasons.push(
@@ -1266,6 +1307,12 @@ export function applyStabilityAutoFix(
       b.branchFrom = {
         ...b.branchFrom,
         bubbleIndex: oldToNew.get(b.branchFrom.bubbleIndex)!,
+      };
+    }
+    if (b.lockToJoint && oldToNew.has(b.lockToJoint.bubbleIndex)) {
+      b.lockToJoint = {
+        ...b.lockToJoint,
+        bubbleIndex: oldToNew.get(b.lockToJoint.bubbleIndex)!,
       };
     }
   });

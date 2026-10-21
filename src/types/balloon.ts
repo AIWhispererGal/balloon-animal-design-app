@@ -61,6 +61,11 @@ export interface BubbleSpec {
   turn?: number;
   /** Optional index of an earlier bubble whose START joint this bubble's far end locks back into */
   lockToBubbleStart?: number;
+  /**
+   * Optional joint (on any balloon, laid out earlier) that this bubble's far end is twisted
+   * into. The two joints become one, and a joint shared by two chains counts as locked.
+   */
+  lockToJoint?: JointAnchorRef;
   /** Optional existing joint where this bubble originates (for multi-balloon wraps/leaves along a stem) */
   branchFrom?: JointAnchorRef;
 

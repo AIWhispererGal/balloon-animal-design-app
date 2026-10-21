@@ -175,6 +175,7 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                         <div className="truncate text-[11px] text-slate-500">
                           {b.lengthInches}″ · {TWIST_ENCYCLOPEDIA[b.twistType]?.name || b.twistType}
                           {b.lockToBubbleStart !== undefined ? ` · locks into #${b.lockToBubbleStart + 1}` : ""}
+                          {b.lockToJoint ? ` · joined to #${b.lockToJoint.bubbleIndex + 1}` : ""}
                         </div>
                       </div>
                     </div>
@@ -277,6 +278,17 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                       </option>
                     ))}
                   </select>
+                  {selectedBubble.lockToJoint && bubbles[selectedBubble.lockToJoint.bubbleIndex] && (
+                    <div className="mt-1.5 flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300">
+                      <span>
+                        End twisted into the {selectedBubble.lockToJoint.end === "end" ? "twist after" : "knot before"} #
+                        {selectedBubble.lockToJoint.bubbleIndex + 1} {bubbles[selectedBubble.lockToJoint.bubbleIndex].label}
+                      </span>
+                      <button onClick={() => onUpdateBubble(selIdx, { lockToJoint: undefined })} className="btn btn-ghost btn-xs">
+                        <Unlink className="h-3 w-3" /> Unlock
+                      </button>
+                    </div>
+                  )}
                   {selectedBubble.lockToBubbleStart !== undefined && (
                     <div className="mt-1.5 flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300">
                       <span>End locks back into the joint before #{selectedBubble.lockToBubbleStart + 1}</span>
