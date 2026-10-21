@@ -60,7 +60,7 @@ import {
 } from "@/lib/balloonLayout";
 import { computeAirBudget } from "@/lib/balloonAir";
 import { SplitMode, twistFlags } from "@/lib/designEdits";
-import { AddBalloonPopover, AddBalloonRequest } from "./AddBalloonPopover";
+import { AddBalloonPopover, AddBalloonRequest, JointAnchorOption } from "./AddBalloonPopover";
 import { ColorPicker } from "./ColorPicker";
 import { SplitMenu } from "./SplitMenu";
 import { AirBudgetBar } from "./AirBudgetBar";
@@ -106,6 +106,12 @@ interface ThreeBalloonViewerProps {
   onDuplicateBubble?: (index: number) => void;
   onSplitBubble?: (index: number, mode: SplitMode) => void;
   onTwistTogether?: (indices: number[]) => void;
+  /** Twist joints (the seams between bubbles) are selectable too */
+  selectedJointIds?: number[];
+  onSelectJoint?: (jointId: number, additive?: boolean) => void;
+  onTwistJoints?: () => void;
+  onClearJointSelection?: () => void;
+  selectedJointAnchor?: JointAnchorOption | null;
   onReleaseTwists?: (indices: number[]) => void;
   onEqualizeLengths?: (indices: number[]) => void;
   onAddBalloon?: (req: AddBalloonRequest) => void;
@@ -231,6 +237,11 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       onDuplicateBubble,
       onSplitBubble,
       onTwistTogether,
+      selectedJointIds,
+      onSelectJoint,
+      onTwistJoints,
+      onClearJointSelection,
+      selectedJointAnchor = null,
       onReleaseTwists,
       onEqualizeLengths,
       onAddBalloon,
@@ -262,6 +273,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
 
     const pickMeshesRef = useRef<THREE.Object3D[]>([]);
     const gizmoMeshesRef = useRef<THREE.Object3D[]>([]);
+    const jointMeshesRef = useRef<THREE.Object3D[]>([]);
     const bubbleMeshesRef = useRef<Map<number, THREE.Mesh[]>>(new Map());
     const activeMatsRef = useRef<THREE.MeshPhysicalMaterial[]>([]);
     const dangerRingsRef = useRef<THREE.Mesh[]>([]);
@@ -300,6 +312,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       pairSync,
       splitMode,
       onSelectBubble,
+      onSelectJoint,
       onUpdateBubble,
       onAddTwistPreset,
       onSplitBubble,
@@ -317,6 +330,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         pairSync,
         splitMode,
         onSelectBubble,
+        onSelectJoint,
         onUpdateBubble,
         onAddTwistPreset,
         onSplitBubble,
@@ -650,6 +664,10 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
           setCursorStyle(k === "add_after" ? "copy" : "ew-resize");
           return;
         }
+        if (raycaster.intersectObjects(jointMeshesRef.current, false)[0]) {
+          setCursorStyle("pointer");
+          return;
+        }
         const bHit = raycaster.intersectObjects(pickMeshesRef.current, false)[0];
         setCursorStyle(bHit ? (latestRef.current.splitMode ? "crosshair" : "pointer") : "grab");
       };
@@ -670,6 +688,14 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
 
         if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return;
         setNdc(e.clientX, e.clientY);
+
+        // Joint markers win over bubbles: they are small and sit inside the seams
+        const jHit = raycaster.intersectObjects(jointMeshesRef.current, false)[0];
+        if (jHit && !latestRef.current.splitMode) {
+          latestRef.current.onSelectJoint?.(jHit.object.userData.jointId as number, e.shiftKey || e.metaKey || e.ctrlKey);
+          return;
+        }
+
         const hits = raycaster.intersectObjects(pickMeshesRef.current, false);
         const hit = hits.find((h) => h.object.userData.bubbleIndex !== undefined);
         if (!hit) return;
@@ -1181,75 +1207,95 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       clearGroup(gizmoGroup);
       clearGroup(labelGroup);
       gizmoMeshesRef.current = [];
+      jointMeshesRef.current = [];
 
-      const { layouts } = layoutSnapshot;
+      const { layouts, joints } = layoutSnapshot;
       const layoutByIndex = new Map(layouts.map((l) => [l.index, l]));
       const primary = selectedBubbleIndex ?? null;
+
+      // Handles and halos always draw on top so they can't hide inside neighbouring bubbles
+      const onTop = (color: string) =>
+        new THREE.MeshBasicMaterial({ color: new THREE.Color(color), depthTest: false, depthWrite: false });
+      const addOnTop = (mesh: THREE.Mesh, order = 30) => {
+        mesh.renderOrder = order;
+        gizmoGroup.add(mesh);
+      };
 
       if (!releasedHands) {
         // halos on every selected bubble
         multiSelection.forEach((idx) => {
           const l = layoutByIndex.get(idx);
           if (!l || !vis.formed.has(idx)) return;
-          const isPrimary = idx === primary;
           const halo = new THREE.Mesh(
-            new THREE.TorusGeometry(l.radiusUnits * 1.38 + 0.1, isPrimary ? 0.042 : 0.03, 10, 36),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color(isPrimary ? SELECT_COLOR : MULTI_COLOR) })
+            new THREE.TorusGeometry(l.radiusUnits * 1.38 + 0.1, 0.045, 10, 36),
+            onTop(idx === primary ? SELECT_COLOR : MULTI_COLOR)
           );
           halo.position.copy(tv(l.mid));
           halo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tv(l.dir));
-          gizmoGroup.add(halo);
+          addOnTop(halo, 28);
+        });
+
+        // twist joints: a small pinch marker at every seam, clickable
+        const selectedJoints = new Set(selectedJointIds ?? []);
+        joints.forEach((j) => {
+          const formedHere = j.bubbleIndices.some((bi) => vis.formed.has(bi));
+          if (!formedHere) return;
+          const isSel = selectedJoints.has(j.id);
+          const marker = new THREE.Mesh(
+            new THREE.SphereGeometry(isSel ? 0.2 : 0.13, 14, 10),
+            isSel
+              ? onTop(HIGHLIGHT)
+              : new THREE.MeshStandardMaterial({ color: new THREE.Color("#1e293b"), roughness: 0.6, metalness: 0.1 })
+          );
+          marker.position.copy(tv(j.pos));
+          marker.userData = { jointId: j.id };
+          if (isSel) {
+            addOnTop(marker, 31);
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.04, 8, 28), onTop(HIGHLIGHT));
+            ring.position.copy(tv(j.pos));
+            ring.lookAt(ring.position.clone().add(new THREE.Vector3(0, 1, 0)));
+            addOnTop(ring, 31);
+          } else {
+            marker.renderOrder = 20;
+            gizmoGroup.add(marker);
+          }
+          jointMeshesRef.current.push(marker);
         });
 
         // handles on the primary bubble
         const l = primary !== null ? layoutByIndex.get(primary) : undefined;
         if (l && vis.formed.has(l.index) && !splitMode) {
           const lenHandlePos = tv(l.end).clone().addScaledVector(tv(l.dir), 0.28);
-          const lenHandle = new THREE.Mesh(
-            new THREE.SphereGeometry(0.24, 18, 14),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color(SELECT_COLOR) })
-          );
+          const lenHandle = new THREE.Mesh(new THREE.SphereGeometry(0.24, 18, 14), onTop(SELECT_COLOR));
           lenHandle.position.copy(lenHandlePos);
           lenHandle.userData = { gizmoKind: "length", bubbleIndex: l.index };
-          gizmoGroup.add(lenHandle);
+          addOnTop(lenHandle);
           gizmoMeshesRef.current.push(lenHandle);
 
-          const coneOut = new THREE.Mesh(
-            new THREE.ConeGeometry(0.14, 0.3, 14),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color(SELECT_COLOR) })
-          );
+          const coneOut = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.3, 14), onTop(SELECT_COLOR));
           coneOut.position.copy(lenHandlePos).addScaledVector(tv(l.dir), 0.3);
           coneOut.quaternion.setFromUnitVectors(Y_AXIS, tv(l.dir));
           coneOut.userData = { gizmoKind: "length", bubbleIndex: l.index };
-          gizmoGroup.add(coneOut);
+          addOnTop(coneOut);
           gizmoMeshesRef.current.push(coneOut);
 
-          const diamHandle = new THREE.Mesh(
-            new THREE.SphereGeometry(0.19, 16, 12),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#F472B6") })
-          );
+          const diamHandle = new THREE.Mesh(new THREE.SphereGeometry(0.19, 16, 12), onTop("#F472B6"));
           diamHandle.position.copy(tv(l.mid)).addScaledVector(tv(l.side), l.radiusUnits + 0.28);
           diamHandle.userData = { gizmoKind: "diameter", bubbleIndex: l.index };
-          gizmoGroup.add(diamHandle);
+          addOnTop(diamHandle);
           gizmoMeshesRef.current.push(diamHandle);
 
-          const bendHandle = new THREE.Mesh(
-            new THREE.OctahedronGeometry(0.22, 0),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color(HIGHLIGHT) })
-          );
+          const bendHandle = new THREE.Mesh(new THREE.OctahedronGeometry(0.22, 0), onTop(HIGHLIGHT));
           bendHandle.position.copy(tv(l.mid)).addScaledVector(tv(l.up), l.radiusUnits + 0.36);
           bendHandle.userData = { gizmoKind: "bend", bubbleIndex: l.index };
-          gizmoGroup.add(bendHandle);
+          addOnTop(bendHandle);
           gizmoMeshesRef.current.push(bendHandle);
 
           const addPos = tv(l.chainEnd).clone().addScaledVector(tv(l.chainDir), 0.32).add(new THREE.Vector3(0, -0.32, 0));
-          const addSphere = new THREE.Mesh(
-            new THREE.SphereGeometry(0.2, 16, 12),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#10B981") })
-          );
+          const addSphere = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), onTop("#10B981"));
           addSphere.position.copy(addPos);
           addSphere.userData = { gizmoKind: "add_after", bubbleIndex: l.index };
-          gizmoGroup.add(addSphere);
+          addOnTop(addSphere);
           gizmoMeshesRef.current.push(addSphere);
         }
       }
@@ -1310,7 +1356,39 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
           labelGroup.add(sprite);
         });
       }
-    }, [layoutSnapshot, vis, multiSelection, selectedBubbleIndex, showLabels, releasedHands, splitMode]);
+    }, [layoutSnapshot, vis, multiSelection, selectedBubbleIndex, selectedJointIds, showLabels, releasedHands, splitMode]);
+
+    /* ---------------- selected bubbles glow (material swap, no rebuild) ---------------- */
+    useEffect(() => {
+      if (releasedHands || multiSelection.length === 0) return;
+      const swapped: Array<{ mesh: THREE.Mesh; original: THREE.Material | THREE.Material[] }> = [];
+      const mats: THREE.Material[] = [];
+      multiSelection.forEach((idx) => {
+        const meshes = bubbleMeshesRef.current.get(idx);
+        if (!meshes) return;
+        const hex = bubbles[idx]?.color ?? "#ffffff";
+        const m = new THREE.MeshPhysicalMaterial({
+          color: new THREE.Color(hex).lerp(new THREE.Color(SELECT_COLOR), 0.3),
+          emissive: new THREE.Color(SELECT_COLOR),
+          emissiveIntensity: idx === selectedBubbleIndex ? 0.35 : 0.28,
+          roughness: 0.16,
+          clearcoat: 1.0,
+          clearcoatRoughness: 0.08,
+          wireframe,
+        });
+        mats.push(m);
+        meshes.forEach((mesh) => {
+          swapped.push({ mesh, original: mesh.material });
+          mesh.material = m;
+        });
+      });
+      return () => {
+        swapped.forEach(({ mesh, original }) => {
+          mesh.material = original;
+        });
+        mats.forEach((m) => m.dispose());
+      };
+    }, [layoutSnapshot, vis, multiSelection, selectedBubbleIndex, bubbles, releasedHands, wireframe]);
 
     /* Escape leaves split mode */
     useEffect(() => {
@@ -1555,6 +1633,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
                 <AddBalloonPopover
                   bubbles={bubbles}
                   selectedBubbleIndex={hasBubbles ? safeIdx : null}
+                  jointAnchor={selectedJointAnchor}
                   usedColors={balloons.map((b) => b.color)}
                   onAdd={onAddBalloon}
                   compact
@@ -1618,6 +1697,30 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
                   ))}
                 </select>
               )}
+            </div>
+          )}
+
+          {/* joint selection bar */}
+          {(selectedJointIds?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2 py-1.5">
+              <span className="font-semibold text-amber-100">
+                {selectedJointIds!.length === 1
+                  ? "1 twist selected · shift-click a second twist, or tie a balloon in here with “Add balloon”"
+                  : "2 twists selected"}
+              </span>
+              {onTwistJoints && (
+                <button
+                  onClick={onTwistJoints}
+                  disabled={selectedJointIds!.length !== 2}
+                  className="btn btn-primary btn-xs"
+                  title="Bring these two twists together and twist them as one; the bubbles between close into a loop, lock pair or ring"
+                >
+                  <Link2 className="h-3.5 w-3.5" /> Twist together
+                </button>
+              )}
+              <button onClick={onClearJointSelection} className="btn btn-ghost btn-icon ml-auto h-6 w-6" title="Clear (Esc)">
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
           )}
 

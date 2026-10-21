@@ -136,6 +136,16 @@ body {
     @apply border-cyan-400/40 bg-cyan-400/10 text-white;
   }
 
+  .seam-row {
+    @apply flex w-full cursor-pointer items-center gap-2 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-600 transition hover:text-amber-200;
+  }
+  .seam-row-active {
+    @apply text-amber-300;
+  }
+  .seam-line {
+    @apply h-px flex-1 bg-current opacity-40;
+  }
+
   .swatch {
     @apply h-5 w-5 rounded-full border border-white/20 transition hover:scale-110;
   }

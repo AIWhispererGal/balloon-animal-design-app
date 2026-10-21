@@ -224,13 +224,74 @@ export interface TwistTogetherResult extends DesignEdit {
 }
 
 /**
- * "Twist these together": the real-world move of bringing two or more twist
- * joints to the same point and twisting them as one.
+ * Twist the joint before bubble `first` together with the joint after bubble
+ * `last` (both on one balloon). Everything in between closes into a ring:
  *
- *  - 2 adjacent bubbles    → a folded 2-bubble Lock Twist (ears, legs)
- *  - 3+ adjacent bubbles   → a Bird Body roll-through bundle
- *  - 2+ non-adjacent       → the last bubble's far end locks back into the
- *                            first bubble's starting joint (closed loop lock)
+ *  - 1 bubble    → a loop twist
+ *  - 2 bubbles   → a folded 2-bubble lock pair (ears, legs)
+ *  - 3+ bubbles  → the last bubble's far end locks back into the first
+ *                  bubble's starting joint (closed loop lock)
+ */
+export function twistRange(
+  balloons: BalloonSpec[],
+  bubbles: BubbleSpec[],
+  first: number,
+  last: number
+): TwistTogetherResult | { error: string } {
+  if (first > last) [first, last] = [last, first];
+  if (!bubbles[first] || !bubbles[last]) return { error: "Those bubbles no longer exist." };
+  for (let i = first; i <= last; i++) {
+    if (bubbles[i].balloonId !== bubbles[first].balloonId) {
+      return {
+        error: "Twist together works along one balloon. Attach a second balloon with “Add balloon” instead.",
+      };
+    }
+  }
+  const next = bubbles.map((b) => ({ ...b }));
+  const count = last - first + 1;
+  let summary = "";
+
+  if (count === 1) {
+    next[first] = { ...next[first], twistType: "loop", ...twistFlags("loop"), lockToBubbleStart: undefined };
+    summary = `Folded “${bubbles[first].label}” into a loop twist.`;
+  } else if (count === 2) {
+    const a = next[first];
+    const hasHeading = a.bend !== undefined || a.turn !== undefined || a.baseDir !== undefined;
+    next[first] = {
+      ...a,
+      twistType: "lock",
+      ...twistFlags("lock"),
+      lockToBubbleStart: undefined,
+      // Fold the pair out to the side so the rest of the balloon doesn't run through it
+      bend: hasHeading ? a.bend : 70,
+      turn: hasHeading ? a.turn : 10,
+    };
+    next[last] = { ...next[last], twistType: "lock", ...twistFlags("lock"), lockToBubbleStart: undefined };
+    const avg = roundQuarter((next[first].lengthInches + next[last].lengthInches) / 2);
+    summary = `Lock-twisted “${bubbles[first].label}” and “${bubbles[last].label}” together as a ${avg}″ pair.`;
+  } else {
+    // Fold the ring into a regular polygon so the bubbles don't lie on top of
+    // each other: every bubble after the first turns by the exterior angle.
+    const fold = Math.round((360 / count) * 10) / 10;
+    for (let i = first; i <= last; i++) {
+      if (next[i].twistType === "lock" || next[i].twistType === "bird_body") {
+        next[i] = { ...next[i], twistType: "basic", ...twistFlags("basic") };
+      }
+      if (i !== last) next[i] = { ...next[i], lockToBubbleStart: undefined };
+      const hasHeading = next[i].bend !== undefined || next[i].turn !== undefined || next[i].baseDir !== undefined;
+      if (i > first && !hasHeading) next[i] = { ...next[i], bend: fold, turn: 0 };
+    }
+    next[last] = { ...next[last], lockToBubbleStart: first };
+    summary = `Closed bubbles #${first + 1}–#${last + 1} into a locked ring (the joint before “${bubbles[first].label}” and the joint after “${bubbles[last].label}” twisted together).`;
+  }
+
+  return { balloons, bubbles: next, focusIndex: first, summary };
+}
+
+/**
+ * "Twist these together" from a bubble selection: adjacent bubbles twist as a
+ * group (2 → lock pair, 3+ → bird-body roll-through); a spread-out selection
+ * closes everything from the first to the last into a ring.
  */
 export function twistTogether(
   balloons: BalloonSpec[],
@@ -242,39 +303,22 @@ export function twistTogether(
     .sort((a, b) => a - b);
   if (indices.length < 2) return { error: "Select at least two bubbles to twist together." };
 
-  const balloonIds = new Set(indices.map((i) => bubbles[i].balloonId));
-  if (balloonIds.size > 1) {
-    return {
-      error: "Twist together works on bubbles of the same balloon. Attach a second balloon with “Add balloon” instead.",
-    };
-  }
-
   const adjacent = indices.every((v, k) => k === 0 || v === indices[k - 1] + 1);
-  const next = bubbles.map((b) => ({ ...b }));
-  let summary = "";
-
-  if (adjacent && indices.length === 2) {
-    indices.forEach((i) => {
-      next[i] = { ...next[i], twistType: "lock", ...twistFlags("lock"), lockToBubbleStart: undefined };
-    });
-    const avg = roundQuarter((next[indices[0]].lengthInches + next[indices[1]].lengthInches) / 2);
-    summary = `Lock-twisted “${bubbles[indices[0]].label}” and “${bubbles[indices[1]].label}” together as a ${avg}″ pair.`;
-  } else if (adjacent) {
+  if (adjacent && indices.length >= 3) {
+    const balloonIds = new Set(indices.map((i) => bubbles[i].balloonId));
+    if (balloonIds.size > 1) return { error: "Twist together works along one balloon." };
+    const next = bubbles.map((b) => ({ ...b }));
     indices.forEach((i) => {
       next[i] = { ...next[i], twistType: "bird_body", ...twistFlags("bird_body"), lockToBubbleStart: undefined };
     });
-    summary = `Rolled ${indices.length} bubbles through as a bird-body bundle.`;
-  } else {
-    const first = indices[0];
-    const last = indices[indices.length - 1];
-    next[last] = { ...next[last], lockToBubbleStart: first };
-    if (next[last].twistType === "lock" || next[last].twistType === "bird_body") {
-      next[last] = { ...next[last], twistType: "basic", ...twistFlags("basic") };
-    }
-    summary = `Locked the end of “${bubbles[last].label}” back into the joint before “${bubbles[first].label}”.`;
+    return {
+      balloons,
+      bubbles: next,
+      focusIndex: indices[0],
+      summary: `Rolled ${indices.length} bubbles through as a bird-body bundle.`,
+    };
   }
-
-  return { balloons, bubbles: next, focusIndex: indices[0], summary };
+  return twistRange(balloons, bubbles, indices[0], indices[indices.length - 1]);
 }
 
 /** Undo a twist-together: unlock the selected bubbles back to basic twists. */

@@ -16,9 +16,17 @@ export interface AddBalloonRequest {
   withStarterBubble: boolean;
 }
 
+export interface JointAnchorOption {
+  ref: JointAnchorRef;
+  label: string;
+  balloonIds: string[];
+}
+
 interface AddBalloonPopoverProps {
   bubbles: BubbleSpec[];
   selectedBubbleIndex: number | null;
+  /** A selected twist joint to tie the new balloon into */
+  jointAnchor?: JointAnchorOption | null;
   usedColors: string[];
   onAdd: (req: AddBalloonRequest) => void;
   compact?: boolean;
@@ -38,6 +46,7 @@ function suggestColor(used: string[]): { hex: string; name: string } {
 export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
   bubbles,
   selectedBubbleIndex,
+  jointAnchor = null,
   usedColors,
   onAdd,
   compact = false,
@@ -48,8 +57,8 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
   const [open, setOpen] = useState(false);
   const [size, setSize] = useState<BalloonSize>("260");
   const [color, setColor] = useState(() => suggestColor(usedColors));
-  const [attachMode, setAttachMode] = useState<"end" | "start" | "free">(
-    bubbles.length > 0 ? "end" : "free"
+  const [attachMode, setAttachMode] = useState<"joint" | "end" | "start" | "free">(
+    jointAnchor ? "joint" : bubbles.length > 0 ? "end" : "free"
   );
   const [starter, setStarter] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -58,7 +67,7 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
     setOpen((o) => {
       if (!o) {
         setColor(suggestColor(usedColors));
-        setAttachMode(bubbles.length > 0 ? "end" : "free");
+        setAttachMode(jointAnchor ? "joint" : bubbles.length > 0 ? "end" : "free");
       }
       return !o;
     });
@@ -94,7 +103,9 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
       colorHex: color.hex,
       colorName: color.name,
       attachTo:
-        attachMode === "free" || anchorIdx === null
+        attachMode === "joint" && jointAnchor
+          ? jointAnchor.ref
+          : attachMode === "free" || anchorIdx === null || attachMode === "joint"
           ? null
           : { bubbleIndex: anchorIdx, end: attachMode },
       withStarterBubble: starter,
@@ -150,6 +161,18 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
           <div>
             <div className="label">Attach</div>
             <div className="space-y-1 text-xs">
+              {jointAnchor && (
+                <label className="flex cursor-pointer items-center gap-2 text-slate-300">
+                  <input
+                    type="radio"
+                    name="attach"
+                    checked={attachMode === "joint"}
+                    onChange={() => setAttachMode("joint")}
+                    className="accent-amber-400"
+                  />
+                  Tie knot into the selected twist (<strong className="text-white">{jointAnchor.label}</strong>)
+                </label>
+              )}
               {anchorBubble && (
                 <>
                   <label className="flex cursor-pointer items-center gap-2 text-slate-300">

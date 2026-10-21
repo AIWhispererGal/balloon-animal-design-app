@@ -19,6 +19,7 @@ import {
   BubbleSpec,
   StepSpec,
   BalloonSpec,
+  JointAnchorRef,
   StabilityAutoFix,
 } from "@/types/balloon";
 import { PRESET_DESIGNS } from "@/lib/balloonPresets";
@@ -41,6 +42,7 @@ import {
   releaseTwists,
   splitBubble,
   twistFlags,
+  twistRange,
   twistTogether,
 } from "@/lib/designEdits";
 import {
@@ -80,6 +82,8 @@ export default function BalloonAppPage() {
   );
   /** Ordered multi-selection; the last entry is the primary (inspected) bubble */
   const [selectedIndices, setSelectedIndices] = useState<number[]>([0]);
+  /** Selected twist joints (ids into the live layout's joint list; cleared on every edit) */
+  const [selectedJointIds, setSelectedJointIds] = useState<number[]>([]);
   /** Balloon that receives new bubbles when nothing is selected (blank slate) */
   const [activeBalloonId, setActiveBalloonId] = useState<string | null>(null);
   const [buildMode, setBuildMode] = useState<BuildViewMode>("step");
@@ -189,6 +193,7 @@ export default function BalloonAppPage() {
       else nextSelection = validSelection.length ? validSelection.map(clamp) : [0];
       if (nextBubbles.length === 0) nextSelection = [];
       setSelectedIndices(nextSelection);
+      setSelectedJointIds([]);
 
       const target = nextSelection[nextSelection.length - 1];
       if (jumpToFocusStep && buildMode === "step" && target !== undefined) {
@@ -214,11 +219,105 @@ export default function BalloonAppPage() {
         return [...without, idx];
       });
       if (buildMode === "step") {
-        setCurrentStepIndex(stepIndexForBubble(currentDesign, idx));
+        const needed = stepIndexForBubble(currentDesign, idx);
+        // Adding to a selection must not rewind the build and hide earlier picks
+        setCurrentStepIndex((prev) => (additive ? Math.max(prev, needed) : needed));
       }
     },
     [buildMode, currentDesign, stepIndexForBubble]
   );
+
+  /* ---------------- joints (the twists between bubbles) ---------------- */
+
+  const handleSelectJoint = useCallback((jointId: number, additive = false) => {
+    setSelectedJointIds((prev) => {
+      if (prev.includes(jointId)) return prev.filter((j) => j !== jointId);
+      if (!additive) return [jointId];
+      // Twisting joins exactly two joints, so keep the most recent two
+      return [...prev, jointId].slice(-2);
+    });
+  }, []);
+
+  const handleClearJointSelection = useCallback(() => setSelectedJointIds([]), []);
+
+  /** For a joint: per balloon, the index of the last bubble that ends there (-1 = the knot). */
+  const placeOfJoint = useCallback(
+    (jointId: number) => {
+      const j = liveSim.joints[jointId];
+      const after = new Map<string, number>();
+      if (!j) return after;
+      j.bubbleIndices.forEach((bi) => {
+        const lay = liveSim.layouts[bi];
+        const balloonId = currentDesign.bubbles[bi]?.balloonId;
+        if (!lay || !balloonId) return;
+        const pos = lay.endJointId === jointId ? bi : lay.startJointId === jointId ? bi - 1 : null;
+        if (pos === null) return;
+        const cur = after.get(balloonId);
+        if (cur === undefined || pos > cur) after.set(balloonId, pos);
+      });
+      return after;
+    },
+    [liveSim, currentDesign.bubbles]
+  );
+
+  /** Start/end joint ids per bubble, for the seam rows in the Build list */
+  const jointIdsByBubble = useMemo(
+    () => liveSim.layouts.map((l) => ({ start: l.startJointId, end: l.endJointId })),
+    [liveSim.layouts]
+  );
+
+  /** The first selected joint as a tie-in anchor for balloons */
+  const selectedJointAnchor = useMemo(() => {
+    const jointId = selectedJointIds[0];
+    if (jointId === undefined) return null;
+    const places = placeOfJoint(jointId);
+    const entry = Array.from(places.entries())[0];
+    if (!entry) return null;
+    const [balloonId, after] = entry;
+    const bubbles = currentDesign.bubbles;
+    let ref: JointAnchorRef | null = null;
+    if (after >= 0 && bubbles[after]) ref = { bubbleIndex: after, end: "end" };
+    else {
+      const firstIdx = bubbles.findIndex((b, i) => b.balloonId === balloonId && liveSim.layouts[i]?.startJointId === jointId);
+      if (firstIdx >= 0) ref = { bubbleIndex: firstIdx, end: "start" };
+    }
+    if (!ref) return null;
+    const label =
+      ref.end === "end" ? `the twist after #${ref.bubbleIndex + 1} ${bubbles[ref.bubbleIndex].label}` : `the knot before #${ref.bubbleIndex + 1} ${bubbles[ref.bubbleIndex].label}`;
+    return { ref, label, balloonIds: Array.from(places.keys()) };
+  }, [selectedJointIds, placeOfJoint, currentDesign.bubbles, liveSim.layouts]);
+
+  /** Twist the two selected joints together: everything between them closes into a ring. */
+  const handleTwistJoints = useCallback(() => {
+    if (selectedJointIds.length !== 2) {
+      showToast("Select two joints to twist together.");
+      return;
+    }
+    const bubbles = currentDesign.bubbles;
+    const a = placeOfJoint(selectedJointIds[0]);
+    const b = placeOfJoint(selectedJointIds[1]);
+    const balloonId = Array.from(a.keys()).find((id) => b.has(id));
+    if (!balloonId) {
+      showToast("Those joints are on different balloons. Tie a balloon in with “Add balloon” instead.");
+      return;
+    }
+    const afterA = a.get(balloonId)!;
+    const afterB = b.get(balloonId)!;
+    const first = Math.min(afterA, afterB) + 1;
+    const last = Math.max(afterA, afterB);
+    if (first > last) {
+      showToast("Pick two different joints with at least one bubble between them.");
+      return;
+    }
+    const res = twistRange(currentDesign.balloons, bubbles, first, last);
+    if ("error" in res) {
+      showToast(res.error);
+      return;
+    }
+    const focus = Array.from({ length: last - first + 1 }, (_, k) => first + k);
+    commitDesignState(res.balloons, res.bubbles, focus, true);
+    showToast(res.summary);
+  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, placeOfJoint, selectedJointIds, showToast]);
 
   const handleSelectMany = useCallback((indices: number[]) => {
     setSelectedIndices(indices.length ? indices : [0]);
@@ -604,6 +703,7 @@ export default function BalloonAppPage() {
         handleSelectStep(currentStepIndex + 1);
       } else if (e.key === "Escape") {
         handleClearSelection();
+        handleClearJointSelection();
       } else if ((e.key === "a" || e.key === "A") && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         handleSelectMany(currentDesign.bubbles.map((_, i) => i));
@@ -614,6 +714,7 @@ export default function BalloonAppPage() {
   }, [
     currentDesign.bubbles,
     currentStepIndex,
+    handleClearJointSelection,
     handleClearSelection,
     handleDeleteBubble,
     handleSelectMany,
@@ -832,6 +933,11 @@ export default function BalloonAppPage() {
                   onDuplicateBubble={handleDuplicateBubble}
                   onSplitBubble={handleSplitBubble}
                   onTwistTogether={handleTwistTogether}
+                  selectedJointIds={selectedJointIds}
+                  onSelectJoint={handleSelectJoint}
+                  onTwistJoints={handleTwistJoints}
+                  onClearJointSelection={handleClearJointSelection}
+                  selectedJointAnchor={selectedJointAnchor}
                   onReleaseTwists={handleReleaseTwists}
                   onEqualizeLengths={handleEqualizeLengths}
                   onAddBalloon={handleAddBalloon}
@@ -911,6 +1017,11 @@ export default function BalloonAppPage() {
                 bubbles={currentDesign.bubbles}
                 selectedBubbleIndex={selectedBubbleIndex}
                 selectedBubbleIndices={validSelection}
+                jointIdsByBubble={jointIdsByBubble}
+                selectedJointIds={selectedJointIds}
+                onSelectJoint={handleSelectJoint}
+                onTwistJoints={handleTwistJoints}
+                selectedJointAnchor={selectedJointAnchor}
                 activeBalloonId={activeBalloonId}
                 onSetActiveBalloon={setActiveBalloonId}
                 onSelectBubble={handleSelectBubble}

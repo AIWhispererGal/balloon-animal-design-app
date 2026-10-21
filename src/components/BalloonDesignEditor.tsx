@@ -14,7 +14,7 @@ import {
 import { BalloonSize, BalloonSpec, BubbleSpec, TwistType } from "@/types/balloon";
 import { TWIST_ENCYCLOPEDIA } from "@/lib/balloonConstants";
 import { SplitMode, twistFlags } from "@/lib/designEdits";
-import { AddBalloonPopover, AddBalloonRequest } from "./AddBalloonPopover";
+import { AddBalloonPopover, AddBalloonRequest, JointAnchorOption } from "./AddBalloonPopover";
 import { ColorPicker } from "./ColorPicker";
 import { SplitMenu } from "./SplitMenu";
 
@@ -23,6 +23,12 @@ interface BalloonDesignEditorProps {
   bubbles: BubbleSpec[];
   selectedBubbleIndex: number | null;
   selectedBubbleIndices: number[];
+  /** Start/end twist-joint ids per bubble (from the live layout) */
+  jointIdsByBubble: Array<{ start: number; end: number }>;
+  selectedJointIds: number[];
+  onSelectJoint: (jointId: number, additive?: boolean) => void;
+  onTwistJoints: () => void;
+  selectedJointAnchor: JointAnchorOption | null;
   activeBalloonId: string | null;
   onSetActiveBalloon: (id: string | null) => void;
   onSelectBubble: (index: number, additive?: boolean) => void;
@@ -45,6 +51,11 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
   bubbles,
   selectedBubbleIndex,
   selectedBubbleIndices,
+  jointIdsByBubble,
+  selectedJointIds,
+  onSelectJoint,
+  onTwistJoints,
+  selectedJointAnchor,
   activeBalloonId,
   onSetActiveBalloon,
   onSelectBubble,
@@ -75,6 +86,26 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
   const sortedSel = [...selectedBubbleIndices].sort((a, b) => a - b);
   const adjacent = sortedSel.every((v, k) => k === 0 || v === sortedSel[k - 1] + 1);
   const usedColors = balloons.map((b) => b.color);
+
+  /** Seam row: the twist joint between bubbles, selectable like a bubble */
+  const renderedJoints = new Set<number>();
+  const seamRow = (jointId: number | undefined, label: string) => {
+    if (jointId === undefined || renderedJoints.has(jointId)) return null;
+    renderedJoints.add(jointId);
+    const sel = selectedJointIds.includes(jointId);
+    return (
+      <button
+        key={`joint-${jointId}`}
+        onClick={(e) => onSelectJoint(jointId, e.shiftKey || e.metaKey || e.ctrlKey)}
+        className={`seam-row ${sel ? "seam-row-active" : ""}`}
+        title="Select this twist. Select two and twist them together, or tie a balloon in here."
+      >
+        <span className="seam-line" />
+        <span className="shrink-0">{label}</span>
+        <span className="seam-line" />
+      </button>
+    );
+  };
 
   return (
     <div className={`panel flex flex-col overflow-hidden ${className}`}>
@@ -126,9 +157,11 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
               {bubbles.map((b, idx) => {
                 const isPrimary = selectedBubbleIndex === idx;
                 const isMulti = !isPrimary && selectedBubbleIndices.includes(idx);
+                const firstOnBalloon = idx === 0 || bubbles[idx - 1].balloonId !== b.balloonId;
                 return (
+                  <React.Fragment key={b.id || idx}>
+                  {firstOnBalloon && seamRow(jointIdsByBubble[idx]?.start, "knot")}
                   <div
-                    key={b.id || idx}
                     onClick={(e) => onSelectBubble(idx, e.shiftKey || e.metaKey || e.ctrlKey)}
                     className={`list-row ${isPrimary ? "list-row-active" : isMulti ? "list-row-multi" : ""}`}
                   >
@@ -157,6 +190,8 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                       </button>
                     </div>
                   </div>
+                  {seamRow(jointIdsByBubble[idx]?.end, `twist after #${idx + 1}`)}
+                  </React.Fragment>
                 );
               })}
             </div>
@@ -164,6 +199,20 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
 
           {/* Inspector */}
           <div className="w-full space-y-4 p-4">
+            {selectedJointIds.length > 0 && (
+              <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-50">
+                <div className="mb-2 font-semibold">
+                  {selectedJointIds.length === 1
+                    ? "1 twist selected. Shift-click a second twist to join them, or tie a balloon into it from the Balloons tab."
+                    : "2 twists selected"}
+                </div>
+                {selectedJointIds.length === 2 && (
+                  <button onClick={onTwistJoints} className="btn btn-primary btn-xs">
+                    <Link2 className="h-3.5 w-3.5" /> Twist these two together
+                  </button>
+                )}
+              </div>
+            )}
             {multi && (
               <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 p-3 text-xs text-cyan-100">
                 <div className="mb-2 font-semibold">
@@ -431,6 +480,24 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5">
+                      {selectedJointAnchor && !selectedJointAnchor.balloonIds.includes(bal.id) && (
+                        <button
+                          onClick={() => onUpdateBalloon(bal.id, { attachTo: selectedJointAnchor.ref })}
+                          className="btn btn-primary btn-xs"
+                          title={`Tie this balloon's nozzle knot into ${selectedJointAnchor.label}`}
+                        >
+                          <Link2 className="h-3.5 w-3.5" /> Tie in here
+                        </button>
+                      )}
+                      {bal.attachTo && (
+                        <button
+                          onClick={() => onUpdateBalloon(bal.id, { attachTo: undefined })}
+                          className="btn btn-ghost btn-xs"
+                          title="Untie: make this balloon free-standing"
+                        >
+                          <Unlink className="h-3.5 w-3.5" /> Untie
+                        </button>
+                      )}
                       <button
                         onClick={() => onSetActiveBalloon(bal.id)}
                         className={`btn btn-xs ${isActive ? "btn-active" : "btn-ghost"}`}
