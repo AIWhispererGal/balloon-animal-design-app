@@ -37,19 +37,14 @@ export const TwistEncyclopediaModal: React.FC<TwistEncyclopediaModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/80">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="text-2xl">🎈</span>
-              <h2 className="text-xl font-bold text-white tracking-wide">
-                Balloon Twister Technique Encyclopedia
-              </h2>
-            </div>
+            <h2 className="text-lg font-semibold text-white">Twist encyclopedia</h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Comprehensive reference of all standard &amp; advanced twisting maneuvers and air displacement
             </p>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center text-lg transition"
+            className="btn btn-icon btn-secondary rounded-full"
           >
             ✕
           </button>

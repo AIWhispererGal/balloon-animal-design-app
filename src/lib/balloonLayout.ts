@@ -7,7 +7,7 @@ import {
   StabilityReport,
   StepSpec,
 } from "@/types/balloon";
-import { calculateBalloonTail } from "./balloonConstants";
+import { computeAirBudget, fitTailForBubbles } from "./balloonAir";
 
 /**
  * Unified 3D Kinematic Topology & Physical Stability Engine
@@ -149,6 +149,8 @@ export interface BalloonChainInfo {
   radiusUnits: number;
   color: string;
   attachedJointLabel?: string;
+  /** True when the balloon has no bubbles yet (rendered as one untwisted tube) */
+  isEmpty?: boolean;
 }
 
 export interface BalloonLayoutResult {
@@ -240,6 +242,13 @@ export function computeBalloonLayout(
 
   const cursors = new Map<string, ChainCursor>();
   let primaryCursor: ChainCursor | null = null;
+  let primaryStart: Vec3 = [0, 0, 0];
+  // Free-standing balloons (no tie-in joint) are laid side by side under the first one
+  let freeStandingCount = 0;
+  const freeStandingOffset = (radiusUnits: number): Vec3 => {
+    freeStandingCount += 1;
+    return [0, -(radiusUnits * 2.6 + 0.35) * freeStandingCount, 0];
+  };
   const rawLayouts: BubbleLayout[] = new Array(bubbles.length);
 
   // Pre-scan per-balloon sequences so multi-bubble structures (2-bubble lock pair,
@@ -328,8 +337,7 @@ export function computeBalloonLayout(
     if (anchor) {
       pos = anchor.pos;
     } else if (primaryCursor) {
-      pos = [...primaryCursor.pos] as Vec3;
-      if (!b.baseDir) dir = [...primaryCursor.dir] as Vec3;
+      pos = vAdd(primaryStart, freeStandingOffset(radiusForDiameter(defaultDiameterForSize(bal?.size))));
     }
 
     const cur: ChainCursor = {
@@ -339,7 +347,10 @@ export function computeBalloonLayout(
       sideCountAtPos: 0,
     };
     cursors.set(b.balloonId, cur);
-    if (!primaryCursor) primaryCursor = cur;
+    if (!primaryCursor) {
+      primaryCursor = cur;
+      primaryStart = [...pos] as Vec3;
+    }
 
     const startJoint = findOrCreateJoint(pos, b.balloonId, bubbleIdx);
     // Tying a secondary balloon's nozzle around an existing joint knots it tight!
@@ -985,26 +996,78 @@ export function computeBalloonLayout(
       }
     }
 
-    // 3. Balloon over-inflation pop check
+    // 3. Balloon air budget: over-inflation pop risk & running out of balloon
     if (bal) {
-      const tailInfo = calculateBalloonTail(bal, bubbles);
-      if (tailInfo.status === "pop_risk") {
+      const air = computeAirBudget(bal, bubbles);
+      if (air.status === "pop_risk") {
         issues.push({
           id: `pop-risk-${bal.id}`,
           severity: "warning",
-          title: `Pop Risk on ${bal.name} (${tailInfo.totalAirDemandInches}″ / 60″ used)`,
-          explanation: `Bubbles plus twist air displacement exceed a 60″ ${bal.size} balloon.`,
-          whatHappensWhenReleased: `Final twists become rock-hard and are very likely to pop!`,
+          title: `Pop Risk on ${bal.name} (${air.twistShiftInches}″ of ${air.initialTailInches}″ tail squeezed away)`,
+          explanation: `Each twist pushes air into the uninflated tail. With ${air.tailRemainingInches}″ left, the final twists will be rock hard.`,
+          whatHappensWhenReleased: `The last bubbles are very likely to pop while you twist them.`,
           bubbleIndices: [seq[seq.length - 1]],
-          fixLabel: `Leave Extra Tail Allowance`,
+          fixLabel: `Leave a longer tail (${roundQuarter(air.initialTailInches + 4)}″)`,
           fix: {
             kind: "adjust_balloon_tail",
             balloonId: bal.id,
-            newTailInches: 14,
+            newTailInches: roundQuarter(air.initialTailInches + 4),
+          },
+        });
+      } else if (air.untwistedInches >= 8 && seq.length > 0) {
+        const fitted = fitTailForBubbles(bal, bubbles);
+        issues.push({
+          id: `leftover-${bal.id}`,
+          severity: "warning",
+          title: `${air.untwistedInches}″ of ${bal.name} left untwisted`,
+          explanation: `You inflate to ${air.inflatedInches}″ but the bubbles only use ${air.bubbleInches}″. The rest trails off the last joint as a limp tube.`,
+          whatHappensWhenReleased: `Nothing unravels, but the sculpture drags a ${air.untwistedInches}″ leftover. Inflate less or add bubbles.`,
+          bubbleIndices: [seq[seq.length - 1]],
+          fixLabel: `Inflate just enough (${fitted}″ tail)`,
+          fix: { kind: "adjust_balloon_tail", balloonId: bal.id, newTailInches: fitted },
+        });
+      } else if (air.status === "over_budget") {
+        const newTail = Math.max(2, roundQuarter(air.initialTailInches - air.overBudgetInches - 1));
+        issues.push({
+          id: `over-budget-${bal.id}`,
+          severity: "warning",
+          title: `Out of balloon on ${bal.name} (${air.bubbleInches}″ of bubbles, ${air.inflatedInches}″ inflated)`,
+          explanation: `The bubbles need ${air.overBudgetInches}″ more inflated balloon than a ${air.initialTailInches}″ tail leaves.`,
+          whatHappensWhenReleased: `You run out of balloon before the last ${air.overBudgetInches}″ of bubbles.`,
+          bubbleIndices: [seq[seq.length - 1]],
+          fixLabel: `Inflate further (${newTail}″ tail)`,
+          fix: {
+            kind: "adjust_balloon_tail",
+            balloonId: bal.id,
+            newTailInches: newTail,
           },
         });
       }
     }
+  });
+
+  // Balloons with no bubbles yet (blank slate / freshly added) still need a chain
+  // so the viewer can draw the inflated, untwisted balloon and its tail.
+  balloons.forEach((bal) => {
+    if (chains.has(bal.id)) return;
+    const anchor = resolveAnchor(bal.attachTo);
+    const radiusUnits = radiusForDiameter(defaultDiameterForSize(bal.size));
+    const pos: Vec3 = anchor
+      ? anchor.pos
+      : primaryCursor
+      ? vAdd(primaryStart, freeStandingOffset(radiusUnits))
+      : [0, 0, 0];
+    const dir: Vec3 = anchor ? [0, 1, 0] : [1, 0, 0];
+    if (!primaryCursor) primaryStart = [...pos] as Vec3;
+    chains.set(bal.id, {
+      balloonId: bal.id,
+      startPos: pos,
+      startDir: dir,
+      radiusUnits,
+      color: bal.color,
+      attachedJointLabel: anchor?.label,
+      isEmpty: true,
+    });
   });
 
   /* ---------------- "Let Go" Physical Release Relaxation ---------------- */

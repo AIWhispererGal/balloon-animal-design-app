@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Eye, Ghost, Hash, Pause, Play, SkipBack, SkipForward } from "lucide-react";
 import { BalloonSpec, BubbleSpec, StepSpec } from "@/types/balloon";
 import { TWIST_ENCYCLOPEDIA } from "@/lib/balloonConstants";
 import { getStepVisibility } from "@/lib/balloonLayout";
+import { computeAirBudget } from "@/lib/balloonAir";
 import type { BuildViewMode } from "./ThreeBalloonViewer";
 
 interface StepPlaybackBarProps {
@@ -21,10 +23,9 @@ interface StepPlaybackBarProps {
 }
 
 /**
- * Playback controls rendered directly beneath the 3D viewport. In
- * "Step-by-Step Build" mode the 3D model shows only the bubbles formed so
- * far (plus the still-un-twisted remainder of each balloon trailing from
- * the last joint). In "Final Shape" mode it shows the finished sculpture.
+ * Playback transport beneath the 3D viewport. In step mode the model shows
+ * only the bubbles formed so far plus the untwisted remainder and shrinking
+ * tail of each balloon; final mode shows the finished sculpture.
  */
 export const StepPlaybackBar: React.FC<StepPlaybackBarProps> = ({
   steps,
@@ -46,13 +47,6 @@ export const StepPlaybackBar: React.FC<StepPlaybackBarProps> = ({
   const step = steps[currentStepIndex];
   const twist = step ? TWIST_ENCYCLOPEDIA[step.twistType] : null;
   const vis = getStepVisibility(steps, bubbles, balloons, currentStepIndex);
-
-  const remainingInches = balloons.map((bal) => ({
-    bal,
-    inches: bubbles
-      .filter((b, i) => b.balloonId === bal.id && !vis.formed.has(i))
-      .reduce((s, b) => s + (b.lengthInches || 0), 0),
-  }));
 
   useEffect(() => {
     if (!playing) return;
@@ -81,85 +75,48 @@ export const StepPlaybackBar: React.FC<StepPlaybackBarProps> = ({
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 space-y-3">
-      {/* Mode toggle + playback transport */}
+    <div className="panel space-y-3 p-3.5">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-lg overflow-hidden border border-slate-700 bg-slate-950">
+        <div className="seg">
           <button
             onClick={() => onBuildModeChange("step")}
-            className={`px-3 py-1.5 text-xs font-bold transition ${
-              buildMode === "step"
-                ? "bg-amber-500 text-slate-950"
-                : "text-slate-400 hover:text-white"
-            }`}
-            title="Show the sculpture being built one step at a time in 3D"
+            className={`seg-item ${buildMode === "step" ? "seg-item-active" : ""}`}
+            title="Show the sculpture being built one step at a time"
           >
-            🪜 Step-by-Step Build
+            Step by step
           </button>
           <button
             onClick={() => {
               setPlaying(false);
               onBuildModeChange("final");
             }}
-            className={`px-3 py-1.5 text-xs font-bold transition ${
-              buildMode === "final"
-                ? "bg-emerald-500 text-slate-950"
-                : "text-slate-400 hover:text-white"
-            }`}
+            className={`seg-item ${buildMode === "final" ? "seg-item-active" : ""}`}
             title="Show the finished balloon shape"
           >
-            ★ Final Shape
+            Final shape
           </button>
         </div>
 
-        <div className="flex items-center gap-1 ml-auto">
-          <button
-            onClick={() => goTo(0)}
-            disabled={currentStepIndex === 0}
-            className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs disabled:opacity-30 transition"
-            title="Back to inflated balloon (Step 1)"
-          >
-            ⏮
+        <div className="ml-auto flex items-center gap-1">
+          <button onClick={() => goTo(0)} disabled={currentStepIndex === 0} className="btn btn-ghost btn-icon" title="First step">
+            <SkipBack className="h-4 w-4" />
           </button>
-          <button
-            onClick={() => goTo(currentStepIndex - 1)}
-            disabled={currentStepIndex === 0}
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold disabled:opacity-30 transition"
-            title="Previous step"
-          >
-            ◀ Prev
+          <button onClick={() => goTo(currentStepIndex - 1)} disabled={currentStepIndex === 0} className="btn btn-ghost btn-icon" title="Previous step ( [ )">
+            <ChevronLeft className="h-4 w-4" />
           </button>
-          <button
-            onClick={handlePlay}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-black transition shadow ${
-              playing
-                ? "bg-rose-500 hover:bg-rose-400 text-white"
-                : "bg-amber-500 hover:bg-amber-400 text-slate-950"
-            }`}
-            title={playing ? "Pause the build animation" : "Play the whole build in 3D"}
-          >
-            {playing ? "⏸ Pause" : "▶ Play Build"}
+          <button onClick={handlePlay} className={`btn ${playing ? "btn-danger" : "btn-primary"} min-w-[96px]`} title={playing ? "Pause" : "Play the whole build"}>
+            {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+            {playing ? "Pause" : "Play build"}
           </button>
-          <button
-            onClick={() => goTo(currentStepIndex + 1)}
-            disabled={currentStepIndex >= lastIndex}
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold disabled:opacity-30 transition"
-            title="Next step"
-          >
-            Next ▶
+          <button onClick={() => goTo(currentStepIndex + 1)} disabled={currentStepIndex >= lastIndex} className="btn btn-ghost btn-icon" title="Next step ( ] )">
+            <ChevronRight className="h-4 w-4" />
           </button>
-          <button
-            onClick={() => goTo(lastIndex)}
-            disabled={currentStepIndex >= lastIndex}
-            className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs disabled:opacity-30 transition"
-            title="Jump to finished sculpture"
-          >
-            ⏭
+          <button onClick={() => goTo(lastIndex)} disabled={currentStepIndex >= lastIndex} className="btn btn-ghost btn-icon" title="Finished sculpture">
+            <SkipForward className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Step scrubber */}
       <div>
         <input
           type="range"
@@ -168,81 +125,55 @@ export const StepPlaybackBar: React.FC<StepPlaybackBarProps> = ({
           step={1}
           value={currentStepIndex}
           onChange={(e) => goTo(parseInt(e.target.value))}
-          className="w-full accent-amber-500 cursor-pointer"
+          className="range"
           title="Scrub through the build steps"
         />
-        <div className="flex justify-between text-[10px] text-slate-500 -mt-0.5">
-          <span>🎈 Inflated balloon</span>
+        <div className="-mt-0.5 flex justify-between text-[11px] text-slate-500">
+          <span>Inflated balloon</span>
           <span className="font-mono text-slate-400">
             Step {currentStepIndex + 1} of {steps.length} · {vis.formed.size}/{bubbles.length} bubbles formed
           </span>
-          <span>★ Finished shape</span>
+          <span>Finished shape</span>
         </div>
       </div>
 
-      {/* Current step summary (mirrors the 3D state above) */}
       {step && buildMode === "step" && (
-        <div className="bg-slate-950/70 border border-slate-800 rounded-lg px-3 py-2 text-xs space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-bold text-white">{step.title}</span>
-            {twist && (
-              <span className="px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800/60 text-[10px] font-semibold">
-                🔄 {twist.name}
-              </span>
-            )}
-            <span className="text-amber-300 font-mono text-[11px]">{step.measurementText}</span>
+        <div className="space-y-1 rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-white">{step.title}</span>
+            {twist && <span className="chip chip-info">{twist.name}</span>}
+            <span className="font-mono text-[11px] text-amber-200">{step.measurementText}</span>
           </div>
-          <p className="text-slate-400 leading-relaxed line-clamp-2">{step.description}</p>
+          <p className="line-clamp-2 leading-relaxed text-slate-400">{step.description}</p>
           <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
-            {remainingInches.map(({ bal, inches }) =>
-              vis.introducedBalloons.has(bal.id) ? (
+            {balloons.map((bal) => {
+              if (!vis.introducedBalloons.has(bal.id)) return null;
+              const air = computeAirBudget(bal, bubbles, vis.formed);
+              return (
                 <span key={bal.id} className="flex items-center gap-1">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full border border-white/20"
-                    style={{ backgroundColor: bal.color }}
-                  />
-                  {bal.size}:{" "}
-                  {inches > 0.05 ? (
-                    <>
-                      <strong className="text-slate-300">{inches.toFixed(1)}″</strong> still un-twisted
-                    </>
-                  ) : (
-                    <span className="text-emerald-400">fully twisted ✓</span>
-                  )}
+                  <span className="h-2.5 w-2.5 rounded-full border border-white/20" style={{ backgroundColor: bal.color }} />
+                  {bal.size}: <strong className="text-slate-300">{air.untwistedInches}″</strong> untwisted ·{" "}
+                  <strong className={air.status === "pop_risk" || air.status === "over_budget" ? "text-rose-300" : "text-slate-300"}>
+                    {air.tailRemainingInches}″
+                  </strong>{" "}
+                  tail
                 </span>
-              ) : null
-            )}
-            <span className="text-amber-400/80">🟡 glowing = forming in this step</span>
+              );
+            })}
+            <span className="text-amber-300/80">glowing = forming in this step</span>
           </div>
         </div>
       )}
 
-      {/* Viewer display toggles */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mr-1">
-          3D overlays:
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          <Eye className="h-3.5 w-3.5" /> Overlays
         </span>
-        <button
-          onClick={onToggleLabels}
-          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition ${
-            showLabels
-              ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-              : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white"
-          }`}
-          title="Number each bubble in 3D to match the instructions"
-        >
-          🔢 Bubble numbers
+        <button onClick={onToggleLabels} className={`btn btn-xs ${showLabels ? "btn-active" : "btn-secondary"}`} title="Number each bubble in 3D to match the instructions">
+          <Hash className="h-3.5 w-3.5" /> Bubble numbers
         </button>
-        <button
-          onClick={onToggleGhost}
-          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition ${
-            showGhost
-              ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-              : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white"
-          }`}
-          title="Preview the next three construction steps: next is strongest, farther steps fade"
-        >
-          👻 Next-step forecast
+        <button onClick={onToggleGhost} className={`btn btn-xs ${showGhost ? "btn-active" : "btn-secondary"}`} title="Preview the next three construction steps">
+          <Ghost className="h-3.5 w-3.5" /> Next-step preview
         </button>
       </div>
     </div>

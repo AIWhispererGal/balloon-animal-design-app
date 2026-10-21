@@ -1,5 +1,6 @@
 import { BalloonSpec, BubbleSpec, StepJointAction, StepSpec } from "@/types/balloon";
 import { TWIST_ENCYCLOPEDIA, inchesToFingers } from "./balloonConstants";
+import { computeAirBudget } from "./balloonAir";
 import { BubbleLayout, JointNode, computeBalloonLayout, roundQuarter } from "./balloonLayout";
 
 /** Human-readable 3D orientation phrase derived directly from the simulated 3D vector! */
@@ -46,49 +47,13 @@ export function generateStepsFromSimulation(
   const { layouts, chains, joints } = computeBalloonLayout(balloons, bubbles);
   const steps: StepSpec[] = [];
 
-  // Track exact per-balloon air budget (60" standard twister latex)
-  const balloonProgress = new Map<
-    string,
-    {
-      totalBubbleInches: number;
-      usedBubbleInches: number;
-      usedTwistShiftInches: number;
-      initialTailInches: number;
-      initialInflatedInches: number;
-    }
-  >();
-
-  balloons.forEach((bal) => {
-    const onBal = bubbles.filter((b) => b.balloonId === bal.id);
-    // DYNAMIC: totalBubbleInches is recomputed fresh every call, so any length edit
-    // immediately changes the air budget and tail allowances.
-    const totalBubbleInches = onBal.reduce((s, b) => s + (b.lengthInches || 0), 0);
-    const totalTwistCost = onBal.reduce(
-      (s, b) => s + (TWIST_ENCYCLOPEDIA[b.twistType]?.tailAirCostInches ?? 0.4),
-      0
-    );
-    // Physical model: a 60" twister has 60" total latex.
-    // Air demand = sum of bubble lengths + twist air displacement (air pushed into tail).
-    // The initial uninflated tail must cover the twist displacement to prevent pops.
-    const configuredTail = bal.tailLengthInches ?? Math.max(8, totalTwistCost + 2);
-    const initialInflated = roundQuarter(
-      Math.min(58.5, Math.max(totalBubbleInches + 2, 60 - configuredTail))
-    );
-    // Initial tail = 60" - inflated, but must be at least the twist demand + safety margin
-    const initialTail = roundQuarter(
-      Math.max(Math.min(40, 60 - initialInflated), totalTwistCost + 2)
-    );
-    balloonProgress.set(bal.id, {
-      totalBubbleInches: roundQuarter(totalBubbleInches),
-      usedBubbleInches: 0,
-      usedTwistShiftInches: 0,
-      initialTailInches: initialTail,
-      initialInflatedInches: initialInflated,
-    });
-  });
+  // Per-balloon air budget (60" latex): bubbles consume inflated length, twists
+  // squeeze air into the tail. Recomputed from the formed set at every step so
+  // the "remaining tail" numbers are exact for that moment of the build.
+  const formedSoFar = new Set<number>();
+  const airAt = (bal: BalloonSpec) => computeAirBudget(bal, bubbles, formedSoFar);
 
   const introducedBalloons = new Set<string>();
-  const formedSoFar = new Set<number>();
 
   // Helper: check if a joint is already locked by bubbles in `formedSoFar`
   const isJointLockedAtStep = (joint: JointNode): boolean => {
@@ -135,17 +100,20 @@ export function generateStepsFromSimulation(
 
   const emitBalloonIntroStep = (bal: BalloonSpec, isPrimary: boolean) => {
     introducedBalloons.add(bal.id);
-    const prog = balloonProgress.get(bal.id)!;
+    const air = airAt(bal);
     const chain = chains.get(bal.id);
-    const tailIn = roundQuarter(bal.tailLengthInches ?? prog.initialTailInches);
+    const tailIn = air.initialTailInches;
     const tailFing = inchesToFingers(tailIn);
+    const totalBubbleInches = roundQuarter(
+      bubbles.filter((b) => b.balloonId === bal.id).reduce((s, b) => s + (b.lengthInches || 0), 0)
+    );
 
     if (isPrimary) {
       steps.push({
         stepNumber: steps.length + 1,
         stepId: `inflate:${bal.id}`,
         title: `Inflate & Burp ${bal.size} ${bal.colorName} (${bal.name})`,
-        description: `Inflate the ${bal.size} ${bal.colorName} twister leaving a ${tailFing}-finger (${tailIn}″) uninflated tail (${prog.totalBubbleInches}″ of bubbles will be formed on this balloon). ${
+        description: `Inflate the ${bal.size} ${bal.colorName} twister to about ${air.inflatedInches}″, leaving a ${tailFing}-finger (${tailIn}″) uninflated tail (${totalBubbleInches}″ of bubbles will be formed on this balloon). ${
           bal.burpNote || "Release a small puff of air (burp) before tying the nozzle knot so twists stay soft and pliable."
         }`,
         twistType: "basic",
@@ -155,7 +123,7 @@ export function generateStepsFromSimulation(
         bubbleIndices: [],
         bubbleLabels: [`Inflate ${bal.size} ${bal.colorName}`],
         measurementText: `Leave ${tailFing} fingers (${tailIn}″) uninflated tail`,
-        remainingInflatedInches: prog.totalBubbleInches,
+        remainingInflatedInches: air.untwistedInches,
         tailRemainingInches: tailIn,
         tailRemainingFingers: tailFing,
         jointAction: "inflate",
@@ -169,7 +137,7 @@ export function generateStepsFromSimulation(
         stepNumber: steps.length + 1,
         stepId: `inflate:${bal.id}`,
         title: `Inflate & Attach ${bal.size} ${bal.colorName} (${bal.name})`,
-        description: `Inflate the ${bal.size} ${bal.colorName} balloon leaving a ${tailFing}-finger (${tailIn}″) uninflated tail, burp slightly, and tie off. Wrap and twist its nozzle knot directly into ${attachWhere}.`,
+        description: `Inflate the ${bal.size} ${bal.colorName} balloon to about ${air.inflatedInches}″, leaving a ${tailFing}-finger (${tailIn}″) uninflated tail, burp slightly, and tie off. Wrap and twist its nozzle knot directly into ${attachWhere}.`,
         twistType: "basic",
         balloonId: bal.id,
         balloonColor: bal.color,
@@ -177,7 +145,7 @@ export function generateStepsFromSimulation(
         bubbleIndices: [],
         bubbleLabels: [`Attach ${bal.size} ${bal.colorName}`],
         measurementText: `Leave ${tailFing} fingers (${tailIn}″) tail · Tie into ${attachWhere}`,
-        remainingInflatedInches: prog.totalBubbleInches,
+        remainingInflatedInches: air.untwistedInches,
         tailRemainingInches: tailIn,
         tailRemainingFingers: tailFing,
         jointAction: "attach_balloon",
@@ -188,8 +156,8 @@ export function generateStepsFromSimulation(
     }
   };
 
-  if (bubbles.length === 0 && balloons[0]) {
-    emitBalloonIntroStep(balloons[0], true);
+  if (bubbles.length === 0) {
+    balloons.forEach((bal, i) => emitBalloonIntroStep(bal, i === 0));
     return preserveUserEdits(steps, previousSteps);
   }
 
@@ -203,8 +171,6 @@ export function generateStepsFromSimulation(
     if (!introducedBalloons.has(bal.id)) {
       emitBalloonIntroStep(bal, introducedBalloons.size === 0);
     }
-
-    const prog = balloonProgress.get(bal.id)!;
 
     // Determine exact topological step group starting at `idx`:
     let groupIndices: number[] = [idx];
@@ -258,17 +224,12 @@ export function generateStepsFromSimulation(
       }
     }
 
-    // Consume air & mark formed
-    groupIndices.forEach((gi) => {
-      formedSoFar.add(gi);
-      prog.usedBubbleInches += bubbles[gi].lengthInches || 0;
-      prog.usedTwistShiftInches += TWIST_ENCYCLOPEDIA[bubbles[gi].twistType]?.tailAirCostInches ?? 0.4;
-    });
-
-    const remInflated = roundQuarter(Math.max(0, prog.totalBubbleInches - prog.usedBubbleInches));
-    // DYNAMIC tail: initial tail minus twist air displacement already applied
-    const remTail = roundQuarter(Math.max(0.5, prog.initialTailInches - prog.usedTwistShiftInches));
-    const remTailFingers = inchesToFingers(remTail);
+    // Mark formed, then read the exact air state at this moment of the build
+    groupIndices.forEach((gi) => formedSoFar.add(gi));
+    const air = airAt(bal);
+    const remInflated = air.untwistedInches;
+    const remTail = air.tailRemainingInches;
+    const remTailFingers = air.tailRemainingFingers;
 
     const lastGi = groupIndices[groupIndices.length - 1];
     const lastLay = layouts[lastGi];
@@ -280,6 +241,13 @@ export function generateStepsFromSimulation(
     let jointAction: StepJointAction = "lock";
     let handStateNote = `🔒 Joint mechanically locked — safe to let go with both hands!`;
     let stabilityWarning: string | undefined;
+
+    let airWarning: string | undefined;
+    if (air.status === "over_budget") {
+      airWarning = `Out of balloon: these bubbles need ${air.overBudgetInches}″ more than you inflated. Inflate further (shorter tail) or shorten earlier bubbles.`;
+    } else if (air.status === "pop_risk") {
+      airWarning = `Pop risk: only ${air.tailRemainingInches}″ of tail left — the air squeezed forward by every twist has nowhere to go.`;
+    }
 
     if (anyWillUntwist) {
       jointAction = "hold";
@@ -429,11 +397,17 @@ export function generateStepsFromSimulation(
       handStateNote,
       stabilityWarning,
       tips: primaryTwistInfo.proTip,
+      warning: airWarning,
       diagramSvgType: diagramType,
     });
 
     idx = groupIndices[groupIndices.length - 1] + 1;
   }
+
+  // Balloons added but not yet twisted still get their inflate / attach step
+  balloons.forEach((bal) => {
+    if (!introducedBalloons.has(bal.id)) emitBalloonIntroStep(bal, introducedBalloons.size === 0);
+  });
 
   return preserveUserEdits(steps, previousSteps);
 }

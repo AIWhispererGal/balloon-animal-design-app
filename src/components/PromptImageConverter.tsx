@@ -350,32 +350,23 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
   };
 
   return (
-    <div className="space-y-5 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+    <div className="panel space-y-5 p-6 shadow-2xl">
       <div className="flex flex-col justify-between gap-3 border-b border-slate-800 pb-4 md:flex-row md:items-center">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-2xl">🎈</span>
-            <h2 className="text-xl font-bold tracking-wide text-white">
-              Convert an Item or Reference Image into 3 Twister Tiers
-            </h2>
-          </div>
+          <h2 className="text-lg font-semibold text-white">New design</h2>
           <p className="mt-1 text-xs text-slate-400">
-            Uploading a reference analyzes it and generates immediately. Add a short description for better object recognition.
+            Describe an item or drop a reference image to generate beginner, intermediate and advanced
+            versions. Or start from an empty balloon and sculpt by hand.
           </p>
         </div>
-        <button
-          onClick={onStartBlankSlate}
-          className="self-start rounded-xl border border-amber-500/30 bg-slate-800 px-4 py-2 text-xs font-bold text-amber-400 shadow transition hover:bg-slate-700 hover:text-amber-300 md:self-auto"
-        >
-          ✨ Start from Blank Slate
+        <button onClick={onStartBlankSlate} className="btn btn-secondary self-start md:self-auto">
+          Start from a blank balloon
         </button>
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
         <div className="space-y-2 md:col-span-7">
-          <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
-            Description or Image Recognition Hint
-          </label>
+          <label className="label">Describe the item</label>
           <div className="relative">
             <input
               type="text"
@@ -383,22 +374,20 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && !isProcessing && generate()}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 py-3 pl-4 pr-28 text-sm text-white shadow-inner placeholder:text-slate-500 focus:border-amber-500 focus:outline-none"
+              className="input py-2.5 pr-28"
             />
             <button
               onClick={() => generate()}
               disabled={isProcessing || isLoading}
-              className="absolute bottom-1.5 right-1.5 top-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 px-4 text-xs font-bold text-slate-950 shadow transition hover:from-amber-400 hover:to-amber-500 disabled:opacity-50"
+              className="btn btn-primary absolute bottom-1.5 right-1.5 top-1.5 px-4"
             >
-              {isProcessing ? "Analyzing…" : selectedImage ? "Regenerate" : "Twist! 🪄"}
+              {isProcessing ? "Analyzing…" : selectedImage ? "Regenerate" : "Generate"}
             </button>
           </div>
         </div>
 
         <div className="space-y-2 md:col-span-5">
-          <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
-            Reference Image
-          </label>
+          <label className="label">Reference image</label>
           <div
             role="button"
             tabIndex={0}
@@ -445,7 +434,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-bold text-amber-300">{selectedFileName}</div>
-                  <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                  <div className="mt-0.5 text-[11px] leading-snug text-slate-400">
                     {analysis?.silhouette ?? "Analyzing reference…"}
                   </div>
                   <div className="mt-1 flex items-center gap-1">
@@ -457,7 +446,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
                         title={`Candidate balloon color ${color}`}
                       />
                     ))}
-                    <span className="ml-1 text-[9px] text-slate-500">one color assigned per balloon</span>
+                    <span className="ml-1 text-[11px] text-slate-500">one color per balloon</span>
                   </div>
                 </div>
                 <button
@@ -468,16 +457,15 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
                     setAnalysis(null);
                     setStatus("Reference cleared. Describe an item or upload another image.");
                   }}
-                  className="rounded-md bg-slate-800 px-2 py-1 text-[10px] text-slate-300 hover:bg-rose-900 hover:text-rose-200"
+                  className="btn btn-ghost btn-xs"
                 >
                   Clear
                 </button>
               </>
             ) : (
               <div className="mx-auto text-center text-xs text-slate-400">
-                <div className="text-xl">📷</div>
                 <div className="font-semibold text-slate-300">Click or drop a reference image</div>
-                <div className="text-[10px]">PNG · JPEG · WebP · GIF · up to 18 MB</div>
+                <div className="text-[11px] text-slate-500">PNG · JPEG · WebP · GIF · up to 18 MB</div>
               </div>
             )}
           </div>
@@ -485,7 +473,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
       </div>
 
       <div
-        className={`rounded-lg border px-3 py-2 text-[11px] ${
+        className={`rounded-lg border px-3 py-2 text-xs ${
           error
             ? "border-rose-500/40 bg-rose-950/30 text-rose-300"
             : isProcessing
@@ -498,9 +486,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
       </div>
 
       <div>
-        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          Quick examples
-        </div>
+        <div className="label">Quick examples</div>
         <div className="flex flex-wrap gap-2">
           {SAMPLE_INSPIRATIONS.map((item) => (
             <button
@@ -510,9 +496,8 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
                 generate(item.query, null, null);
               }}
               disabled={isProcessing}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-slate-300 shadow-sm transition hover:border-slate-700 hover:bg-slate-800 hover:text-white disabled:opacity-50"
+              className="btn btn-secondary"
             >
-              <span>{item.icon}</span>
               <span>{item.label}</span>
             </button>
           ))}

@@ -4,6 +4,8 @@ import { balloonDesigns } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { PRESET_DESIGNS } from "@/lib/balloonPresets";
 
+export const dynamic = "force-dynamic";
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);

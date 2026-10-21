@@ -2,25 +2,46 @@
 
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import {
+  BookOpen,
+  Camera,
+  Download,
+  Layers,
+  ListOrdered,
+  Plus,
+  Save,
+  Scale,
+  Wrench,
+} from "lucide-react";
+import {
   ComplexityLevel,
   FullDesign,
   BubbleSpec,
   StepSpec,
   BalloonSpec,
-  BalloonSize,
   StabilityAutoFix,
 } from "@/types/balloon";
 import { PRESET_DESIGNS } from "@/lib/balloonPresets";
-import {
-  generateStepsFromSimulation,
-  createBlankSlateDesign,
-} from "@/lib/stepGenerator";
+import { generateStepsFromSimulation, createBlankSlateDesign } from "@/lib/stepGenerator";
 import {
   computeBalloonLayout,
   applyStabilityAutoFix,
   autoStabilizeSculpture,
   defaultDiameterForSize,
+  getStepVisibility,
 } from "@/lib/balloonLayout";
+import { computeAirBudget, defaultTailInches } from "@/lib/balloonAir";
+import {
+  SplitMode,
+  deleteBubbles,
+  equalizeLengths,
+  insertBubbles,
+  moveBubble,
+  newBubbleId,
+  releaseTwists,
+  splitBubble,
+  twistFlags,
+  twistTogether,
+} from "@/lib/designEdits";
 import {
   ThreeBalloonViewer,
   ThreeBalloonViewerRef,
@@ -28,13 +49,14 @@ import {
   AddTwistPresetKind,
 } from "@/components/ThreeBalloonViewer";
 import { StepPlaybackBar } from "@/components/StepPlaybackBar";
-import { PromptImageConverter } from "@/components/PromptImageConverter";
 import { ComplexityTierSelector } from "@/components/ComplexityTierSelector";
 import { InstructionStepDeck } from "@/components/InstructionStepDeck";
 import { BalloonDesignEditor } from "@/components/BalloonDesignEditor";
 import { TwistEncyclopediaModal } from "@/components/TwistEncyclopediaModal";
 import { ExportCardModal } from "@/components/ExportCardModal";
 import { TailAllowanceMeter } from "@/components/TailAllowanceMeter";
+import { NewDesignModal } from "@/components/NewDesignModal";
+import { AddBalloonRequest } from "@/components/AddBalloonPopover";
 
 export default function BalloonAppPage() {
   const [designTierMap, setDesignTierMap] = useState<Record<ComplexityLevel, FullDesign>>(
@@ -44,32 +66,69 @@ export default function BalloonAppPage() {
   const [currentStepIndex, setCurrentStepIndex] = useState(
     () => PRESET_DESIGNS.dog.beginner.steps.length - 1
   );
-  const [selectedBubbleIndex, setSelectedBubbleIndex] = useState<number>(0);
+  /** Ordered multi-selection; the last entry is the primary (inspected) bubble */
+  const [selectedIndices, setSelectedIndices] = useState<number[]>([0]);
+  /** Balloon that receives new bubbles when nothing is selected (blank slate) */
+  const [activeBalloonId, setActiveBalloonId] = useState<string | null>(null);
   const [buildMode, setBuildMode] = useState<BuildViewMode>("step");
   const [showLabels, setShowLabels] = useState(true);
   const [showGhost, setShowGhost] = useState(false);
 
-  const [rightPanelTab, setRightPanelTab] = useState<
-    "instructions" | "cad_editor" | "telemetry"
-  >("instructions");
+  const [rightPanelTab, setRightPanelTab] = useState<"instructions" | "cad_editor" | "telemetry">(
+    "instructions"
+  );
 
+  const [isNewDesignOpen, setIsNewDesignOpen] = useState(false);
   const [isEncyclopediaOpen, setIsEncyclopediaOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [capturedPngUrl, setCapturedPngUrl] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const viewerRef = useRef<ThreeBalloonViewerRef>(null);
 
   const currentDesign = designTierMap[activeComplexity] || PRESET_DESIGNS.dog.beginner;
+  const bubbleCount = currentDesign.bubbles.length;
+  const selectedBubbleIndex =
+    bubbleCount === 0
+      ? null
+      : Math.max(0, Math.min(selectedIndices[selectedIndices.length - 1] ?? 0, bubbleCount - 1));
+  const validSelection = useMemo(
+    () => selectedIndices.filter((i) => i >= 0 && i < bubbleCount),
+    [selectedIndices, bubbleCount]
+  );
 
   const liveSim = useMemo(
     () => computeBalloonLayout(currentDesign.balloons, currentDesign.bubbles),
     [currentDesign.balloons, currentDesign.bubbles]
   );
 
+  const stepVisibility = useMemo(
+    () =>
+      buildMode === "step"
+        ? getStepVisibility(
+            currentDesign.steps,
+            currentDesign.bubbles,
+            currentDesign.balloons,
+            currentStepIndex
+          )
+        : null,
+    [buildMode, currentDesign.steps, currentDesign.bubbles, currentDesign.balloons, currentStepIndex]
+  );
+
+  const airByBalloon = useMemo(
+    () =>
+      currentDesign.balloons.map((bal) => ({
+        balloon: bal,
+        air: computeAirBudget(bal, currentDesign.bubbles, stepVisibility?.formed ?? null),
+      })),
+    [currentDesign.balloons, currentDesign.bubbles, stepVisibility]
+  );
+
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3200);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastMessage(null), 3200);
   }, []);
 
   /** Find the step that forms `bubbleIdx` so 3D clicks & step instructions stay in lock-step. */
@@ -83,12 +142,12 @@ export default function BalloonAppPage() {
     return found === -1 ? Math.max(0, design.steps.length - 1) : found;
   }, []);
 
-  /** Central atomic commit: ALWAYS regenerates steps directly from the 3D simulation! */
+  /** Central atomic commit: ALWAYS regenerates steps directly from the 3D simulation. */
   const commitDesignState = useCallback(
     (
       nextBalloons: BalloonSpec[],
       nextBubblesRaw: BubbleSpec[],
-      focusBubbleIdx?: number,
+      focus?: number | number[],
       jumpToFocusStep = false
     ) => {
       const balloonColors = new Map(nextBalloons.map((balloon) => [balloon.id, balloon.color]));
@@ -97,11 +156,7 @@ export default function BalloonAppPage() {
         index,
         color: balloonColors.get(bubble.balloonId) ?? bubble.color,
       }));
-      const nextSteps = generateStepsFromSimulation(
-        nextBalloons,
-        nextBubbles,
-        currentDesign.steps
-      );
+      const nextSteps = generateStepsFromSimulation(nextBalloons, nextBubbles, currentDesign.steps);
       const updatedDesign: FullDesign = {
         ...currentDesign,
         balloons: nextBalloons,
@@ -112,35 +167,51 @@ export default function BalloonAppPage() {
       };
       setDesignTierMap((prev) => ({ ...prev, [activeComplexity]: updatedDesign }));
 
-      const targetBubble =
-        focusBubbleIdx !== undefined
-          ? Math.max(0, Math.min(focusBubbleIdx, nextBubbles.length - 1))
-          : Math.min(selectedBubbleIndex, nextBubbles.length - 1);
-      setSelectedBubbleIndex(targetBubble);
+      const clamp = (i: number) => Math.max(0, Math.min(i, nextBubbles.length - 1));
+      let nextSelection: number[];
+      if (Array.isArray(focus)) nextSelection = Array.from(new Set(focus.map(clamp)));
+      else if (focus !== undefined) nextSelection = [clamp(focus)];
+      else nextSelection = validSelection.length ? validSelection.map(clamp) : [0];
+      if (nextBubbles.length === 0) nextSelection = [];
+      setSelectedIndices(nextSelection);
 
-      if (jumpToFocusStep && buildMode === "step") {
-        setCurrentStepIndex(stepIndexForBubble(updatedDesign, targetBubble));
+      const target = nextSelection[nextSelection.length - 1];
+      if (jumpToFocusStep && buildMode === "step" && target !== undefined) {
+        setCurrentStepIndex(stepIndexForBubble(updatedDesign, target));
       } else {
         setCurrentStepIndex((prev) => Math.max(0, Math.min(prev, nextSteps.length - 1)));
       }
       return updatedDesign;
     },
-    [activeComplexity, buildMode, currentDesign, selectedBubbleIndex, stepIndexForBubble]
+    [activeComplexity, buildMode, currentDesign, validSelection, stepIndexForBubble]
   );
 
+  /* ---------------- selection ---------------- */
+
   const handleSelectBubble = useCallback(
-    (idx: number) => {
-      setSelectedBubbleIndex(idx);
+    (idx: number, additive = false) => {
+      if (idx < 0 || idx >= currentDesign.bubbles.length) return;
+      setSelectedIndices((prev) => {
+        if (!additive) return [idx];
+        const without = prev.filter((i) => i !== idx);
+        // Toggle off if already selected (but never leave the set empty)
+        if (without.length !== prev.length) return without.length ? without : [idx];
+        return [...without, idx];
+      });
       if (buildMode === "step") {
-        setCurrentStepIndex((prev) => {
-          // Ensure selected bubble is visible in step mode (never ahead of current step)
-          const needed = stepIndexForBubble(currentDesign, idx);
-          return prev < needed ? needed : needed;
-        });
+        setCurrentStepIndex(stepIndexForBubble(currentDesign, idx));
       }
     },
     [buildMode, currentDesign, stepIndexForBubble]
   );
+
+  const handleSelectMany = useCallback((indices: number[]) => {
+    setSelectedIndices(indices.length ? indices : [0]);
+  }, []);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedIndices((prev) => (prev.length ? [prev[prev.length - 1]] : []));
+  }, []);
 
   const handleSelectStep = useCallback(
     (idx: number) => {
@@ -148,10 +219,12 @@ export default function BalloonAppPage() {
       setBuildMode("step");
       setCurrentStepIndex(clamped);
       const first = currentDesign.steps[clamped]?.bubbleIndices[0];
-      if (first !== undefined) setSelectedBubbleIndex(first);
+      if (first !== undefined) setSelectedIndices([first]);
     },
     [currentDesign]
   );
+
+  /* ---------------- design lifecycle ---------------- */
 
   const handleDesignsGenerated = (
     newDesigns: Record<ComplexityLevel, FullDesign>,
@@ -160,8 +233,9 @@ export default function BalloonAppPage() {
     setDesignTierMap(newDesigns);
     setBuildMode("step");
     setCurrentStepIndex(Math.max(0, newDesigns[activeComplexity].steps.length - 1));
-    setSelectedBubbleIndex(0);
-    showToast(`Generated 3 tiers for "${promptOrLabel}" — scrub steps or press ▶ Play Build!`);
+    setSelectedIndices([0]);
+    setActiveBalloonId(null);
+    showToast(`Generated three tiers for “${promptOrLabel}”. Scrub the steps or press Play.`);
   };
 
   const handleStartBlankSlate = () => {
@@ -169,12 +243,14 @@ export default function BalloonAppPage() {
     setDesignTierMap(blankDesigns);
     setActiveComplexity("beginner");
     setBuildMode("step");
-    setCurrentStepIndex(Math.max(0, blankDesigns.beginner.steps.length - 1));
-    setSelectedBubbleIndex(0);
-    showToast(
-      "Blank Slate ready! Click or drag twists inside the 3D viewport to build from scratch."
-    );
+    setCurrentStepIndex(0);
+    setSelectedIndices([]);
+    setActiveBalloonId(blankDesigns.beginner.balloons[0]?.id ?? null);
+    setRightPanelTab("cad_editor");
+    showToast("Blank balloon ready. Pick a twist from the palette to make your first bubble.");
   };
+
+  /* ---------------- bubble edits ---------------- */
 
   /** Update a bubble (with optional Lock-Pair partner sync during 3D drag resizing). */
   const handleUpdateBubble = useCallback(
@@ -192,9 +268,6 @@ export default function BalloonAppPage() {
           if (updated.diameterInches !== undefined) {
             updatedBubbles[partnerIdx].diameterInches = updated.diameterInches;
           }
-          if (updated.color !== undefined) {
-            updatedBubbles[partnerIdx].color = updated.color;
-          }
         }
       }
 
@@ -204,274 +277,104 @@ export default function BalloonAppPage() {
     [commitDesignState, currentDesign.balloons, currentDesign.bubbles, liveSim.layouts]
   );
 
-  /** Add any twist formation right inside the 3D viewport (single bubble, 2-lock pair, 3-roll bird body, etc.)! */
+  /** Add any twist formation (single bubble, 2-lock pair, 3-roll bird body, …) after a bubble. */
   const handleAddTwistPreset = useCallback(
-    (preset: AddTwistPresetKind, afterBubbleIndex?: number) => {
-      const insertAt =
-        afterBubbleIndex !== undefined
-          ? Math.min(Math.max(-1, afterBubbleIndex) + 1, currentDesign.bubbles.length)
-          : currentDesign.bubbles.length;
-      const refBubble =
-        currentDesign.bubbles[Math.max(0, insertAt - 1)] || currentDesign.bubbles[0];
-      const bal =
-        currentDesign.balloons.find((b) => b.id === refBubble?.balloonId) ||
-        currentDesign.balloons[0];
-      const diam = refBubble?.diameterInches || defaultDiameterForSize(bal.size);
-      const col = refBubble?.color || bal.color;
-      const uid = () => `b-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    (preset: AddTwistPresetKind, afterBubbleIndex?: number, balloonId?: string) => {
+      const { balloons, bubbles } = currentDesign;
+      const targetBalloonId =
+        balloonId ??
+        (afterBubbleIndex !== undefined ? bubbles[afterBubbleIndex]?.balloonId : undefined) ??
+        activeBalloonId ??
+        bubbles[bubbles.length - 1]?.balloonId ??
+        balloons[0]?.id;
+      const bal = balloons.find((b) => b.id === targetBalloonId) || balloons[0];
+      if (!bal) return;
 
-      let toInsert: BubbleSpec[] = [];
+      // Insert after the given bubble, or after the last bubble of the target balloon
+      let insertAt: number;
+      if (afterBubbleIndex !== undefined && bubbles[afterBubbleIndex]) {
+        insertAt = afterBubbleIndex + 1;
+      } else {
+        let lastOnBal = -1;
+        bubbles.forEach((b, i) => {
+          if (b.balloonId === bal.id) lastOnBal = i;
+        });
+        insertAt = lastOnBal === -1 ? bubbles.length : lastOnBal + 1;
+      }
+      const refBubble = bubbles[insertAt - 1]?.balloonId === bal.id ? bubbles[insertAt - 1] : undefined;
+      const diam = refBubble?.diameterInches || defaultDiameterForSize(bal.size);
+      const col = bal.color;
+
+      const mk = (
+        label: string,
+        lengthInches: number,
+        twistType: BubbleSpec["twistType"],
+        extra: Partial<BubbleSpec> = {}
+      ): BubbleSpec => ({
+        id: newBubbleId(),
+        balloonId: bal.id,
+        index: 0,
+        label,
+        lengthInches,
+        diameterInches: diam,
+        twistType,
+        color: col,
+        ...twistFlags(twistType),
+        ...extra,
+      });
+
+      let toInsert: BubbleSpec[];
       switch (preset) {
         case "lock_pair":
           toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Lock Bubble A",
-              lengthInches: 3.25,
-              diameterInches: diam,
-              twistType: "lock",
-              color: col,
-              bend: 65,
-              turn: 12,
-            },
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Lock Bubble B",
-              lengthInches: 3.25,
-              diameterInches: diam,
-              twistType: "lock",
-              color: col,
-            },
+            mk("Lock Bubble A", 3.25, "lock", { bend: 65, turn: 12 }),
+            mk("Lock Bubble B", 3.25, "lock"),
           ];
           break;
         case "bird_body":
           toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Bird Rail 1",
-              lengthInches: 4.5,
-              diameterInches: diam,
-              twistType: "bird_body",
-              color: col,
-            },
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Bird Rail 2",
-              lengthInches: 4.5,
-              diameterInches: diam,
-              twistType: "bird_body",
-              color: col,
-            },
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Bird Roll Center",
-              lengthInches: 4.5,
-              diameterInches: diam,
-              twistType: "bird_body",
-              color: col,
-            },
+            mk("Bird Rail 1", 4.5, "bird_body"),
+            mk("Bird Rail 2", 4.5, "bird_body"),
+            mk("Bird Roll Center", 4.5, "bird_body"),
           ];
           break;
         case "tulip":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Tulip / Apple Bubble",
-              lengthInches: 2.5,
-              diameterInches: diam,
-              twistType: "tulip",
-              isTulip: true,
-              color: col,
-            },
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Tulip Lock Pinch",
-              lengthInches: 1.0,
-              diameterInches: diam,
-              twistType: "pinch",
-              isPinch: true,
-              color: col,
-            },
-          ];
+          toInsert = [mk("Tulip / Apple Bubble", 2.5, "tulip"), mk("Tulip Lock Pinch", 1.0, "pinch")];
           break;
         case "pinch":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Pinch Twist",
-              lengthInches: 1.1,
-              diameterInches: diam,
-              twistType: "pinch",
-              isPinch: true,
-              color: col,
-            },
-          ];
+          toInsert = [mk("Pinch Twist", 1.1, "pinch")];
           break;
         case "toe":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Toe Twist Paw",
-              lengthInches: 0.9,
-              diameterInches: Math.max(0.9, diam * 0.75),
-              twistType: "toe",
-              isPinch: true,
-              color: col,
-            },
-          ];
+          toInsert = [mk("Toe Twist Paw", 0.9, "toe", { diameterInches: Math.max(0.9, diam * 0.75) })];
           break;
         case "loop":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Loop Petal",
-              lengthInches: 5.0,
-              diameterInches: diam,
-              twistType: "loop",
-              isLoop: true,
-              color: col,
-            },
-          ];
+          toInsert = [mk("Loop Petal", 5.0, "loop")];
           break;
         case "spiral":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Spiral Coil",
-              lengthInches: 5.5,
-              diameterInches: diam,
-              twistType: "spiral",
-              color: col,
-            },
-          ];
+          toInsert = [mk("Spiral Coil", 5.5, "spiral")];
           break;
         case "s_hook":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "S-Hook Curve",
-              lengthInches: 4.5,
-              diameterInches: diam,
-              twistType: "s_hook",
-              color: col,
-              bend: 45,
-            },
-          ];
+          toInsert = [mk("S-Hook Curve", 4.5, "s_hook", { bend: 45 })];
           break;
         case "z_bend":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Z-Bend Segment",
-              lengthInches: 5.0,
-              diameterInches: diam,
-              twistType: "z_bend",
-              color: col,
-            },
-          ];
+          toInsert = [mk("Z-Bend Segment", 5.0, "z_bend")];
           break;
         case "side_bubble":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Side Bubble",
-              lengthInches: 4.5,
-              diameterInches: diam,
-              twistType: "side_bubble",
-              color: col,
-            },
-          ];
+          toInsert = [mk("Side Bubble", 4.5, "side_bubble")];
           break;
         case "cut_tail_bubbles":
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: "Pom-Pom Tip Bead",
-              lengthInches: 1.25,
-              diameterInches: diam * 1.1,
-              twistType: "cut_tail_bubbles",
-              color: col,
-            },
-          ];
+          toInsert = [mk("Pom-Pom Tip Bead", 1.25, "cut_tail_bubbles", { diameterInches: diam * 1.1 })];
           break;
         default:
-          toInsert = [
-            {
-              id: uid(),
-              balloonId: bal.id,
-              index: 0,
-              label: `Bubble ${insertAt + 1}`,
-              lengthInches: 3.0,
-              diameterInches: diam,
-              twistType: "basic",
-              color: col,
-            },
-          ];
+          toInsert = [mk(`Bubble ${insertAt + 1}`, 3.0, "basic")];
       }
 
-      const idMap = new Map<number, string>();
-      currentDesign.bubbles.forEach((b, i) => idMap.set(i, b.id));
-
-      const nextBubbles = [...currentDesign.bubbles];
-      nextBubbles.splice(insertAt, 0, ...toInsert);
-
-      // Remap any index anchors (`lockToBubbleStart`, `branchFrom`, `attachTo`) safely across insertions
-      const newIndexById = new Map<string, number>();
-      nextBubbles.forEach((b, i) => newIndexById.set(b.id, i));
-      nextBubbles.forEach((b) => {
-        if (b.lockToBubbleStart !== undefined) {
-          const refId = idMap.get(b.lockToBubbleStart);
-          if (refId && newIndexById.has(refId)) b.lockToBubbleStart = newIndexById.get(refId);
-        }
-        if (b.branchFrom) {
-          const refId = idMap.get(b.branchFrom.bubbleIndex);
-          if (refId && newIndexById.has(refId)) {
-            b.branchFrom = { ...b.branchFrom, bubbleIndex: newIndexById.get(refId)! };
-          }
-        }
-      });
-      const nextBalloons = currentDesign.balloons.map((bl) => {
-        if (!bl.attachTo) return bl;
-        const refId = idMap.get(bl.attachTo.bubbleIndex);
-        return refId && newIndexById.has(refId)
-          ? { ...bl, attachTo: { ...bl.attachTo, bubbleIndex: newIndexById.get(refId)! } }
-          : bl;
-      });
-
-      commitDesignState(nextBalloons, nextBubbles, insertAt, true);
-      showToast(`Added ${preset.replace(/_/g, " ")} — step instructions updated automatically!`);
+      const res = insertBubbles(balloons, bubbles, insertAt, toInsert);
+      commitDesignState(res.balloons, res.bubbles, res.focusIndex, true);
+      setActiveBalloonId(bal.id);
+      showToast(`Added ${preset.replace(/_/g, " ")} to ${bal.name}.`);
     },
-    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
+    [activeBalloonId, commitDesignState, currentDesign, showToast]
   );
 
   const handleDuplicateBubble = useCallback(
@@ -480,146 +383,147 @@ export default function BalloonAppPage() {
       if (!src) return;
       const clone: BubbleSpec = {
         ...src,
-        id: `b-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        id: newBubbleId(),
         label: `${src.label} (copy)`,
         lockToBubbleStart: undefined,
       };
-      const nextBubbles = [...currentDesign.bubbles];
-      nextBubbles.splice(index + 1, 0, clone);
-      commitDesignState(currentDesign.balloons, nextBubbles, index + 1, true);
-      showToast(`Duplicated "${src.label}"`);
+      const res = insertBubbles(currentDesign.balloons, currentDesign.bubbles, index + 1, [clone]);
+      commitDesignState(res.balloons, res.bubbles, res.focusIndex, true);
+      showToast(`Duplicated “${src.label}”.`);
     },
     [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
   );
-
-  const handleAddBubble = (balloonId?: string) => {
-    const assignedBal =
-      currentDesign.balloons.find((b) => b.id === balloonId) || currentDesign.balloons[0];
-    const newBubble: BubbleSpec = {
-      id: `b-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-      balloonId: assignedBal.id,
-      index: currentDesign.bubbles.length,
-      label: `Bubble ${currentDesign.bubbles.length + 1}`,
-      lengthInches: 3.0,
-      diameterInches: defaultDiameterForSize(assignedBal.size),
-      twistType: "basic",
-      color: assignedBal.color,
-    };
-    commitDesignState(
-      currentDesign.balloons,
-      [...currentDesign.bubbles, newBubble],
-      currentDesign.bubbles.length,
-      true
-    );
-    showToast("Added bubble — steps updated!");
-  };
 
   const handleDeleteBubble = useCallback(
     (index: number) => {
-      if (currentDesign.bubbles.length <= 1) return;
-      const removedId = currentDesign.bubbles[index]?.id;
-      const idByOldIndex = new Map<number, string>();
-      currentDesign.bubbles.forEach((b, i) => idByOldIndex.set(i, b.id));
+      const indices = validSelection.includes(index) && validSelection.length > 1 ? validSelection : [index];
+      if (indices.some((i) => !currentDesign.bubbles[i])) return;
+      const res = deleteBubbles(currentDesign.balloons, currentDesign.bubbles, indices);
+      commitDesignState(res.balloons, res.bubbles, res.focusIndex, true);
+      showToast(
+        indices.length > 1
+          ? `Removed ${indices.length} bubbles. Stability and steps recalculated.`
+          : "Removed bubble. Stability and steps recalculated."
+      );
+    },
+    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast, validSelection]
+  );
 
-      const nextBubbles = currentDesign.bubbles
-        .filter((_, i) => i !== index)
-        .map((b) => ({ ...b }));
-      const newIdxById = new Map<string, number>();
-      nextBubbles.forEach((b, i) => newIdxById.set(b.id, i));
+  const handleMoveBubble = (index: number, direction: "up" | "down") => {
+    const res = moveBubble(
+      currentDesign.balloons,
+      currentDesign.bubbles,
+      index,
+      direction === "up" ? index - 1 : index + 1
+    );
+    commitDesignState(res.balloons, res.bubbles, res.focusIndex, true);
+  };
 
-      nextBubbles.forEach((b) => {
-        if (b.lockToBubbleStart !== undefined) {
-          const refId = idByOldIndex.get(b.lockToBubbleStart);
-          b.lockToBubbleStart =
-            refId && refId !== removedId ? newIdxById.get(refId) : undefined;
-        }
-        if (b.branchFrom) {
-          const refId = idByOldIndex.get(b.branchFrom.bubbleIndex);
-          b.branchFrom =
-            refId && refId !== removedId && newIdxById.has(refId)
-              ? { ...b.branchFrom, bubbleIndex: newIdxById.get(refId)! }
-              : undefined;
-        }
-      });
-
-      const nextBalloons = currentDesign.balloons.map((bl) => {
-        if (!bl.attachTo) return bl;
-        const refId = idByOldIndex.get(bl.attachTo.bubbleIndex);
-        return {
-          ...bl,
-          attachTo:
-            refId && refId !== removedId && newIdxById.has(refId)
-              ? { ...bl.attachTo, bubbleIndex: newIdxById.get(refId)! }
-              : { bubbleIndex: 0, end: "end" as const },
-        };
-      });
-
-      commitDesignState(nextBalloons, nextBubbles, Math.max(0, index - 1), true);
-      showToast("Removed bubble — stability & step instructions recalculated!");
+  const handleSplitBubble = useCallback(
+    (index: number, mode: SplitMode) => {
+      const res = splitBubble(currentDesign.balloons, currentDesign.bubbles, index, mode);
+      if (!res) {
+        showToast("That bubble is too short to split. Each piece needs at least ½″.");
+        return;
+      }
+      const added = res.bubbles.length - currentDesign.bubbles.length;
+      const focus = Array.from({ length: added + 1 }, (_, k) => res.focusIndex + k);
+      commitDesignState(res.balloons, res.bubbles, focus, true);
+      const what =
+        mode.kind === "lock_pair"
+          ? "a folded lock pair"
+          : mode.kind === "pinch_between"
+          ? "two bubbles with a pinch lock between"
+          : mode.kind === "at"
+          ? `two bubbles at ${mode.inches}″`
+          : `${mode.parts} equal bubbles`;
+      showToast(`Split into ${what}. Total length unchanged.`);
     },
     [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
   );
 
-  const handleMoveBubble = (index: number, direction: "up" | "down") => {
-    const targetIdx = direction === "up" ? index - 1 : index + 1;
-    if (targetIdx < 0 || targetIdx >= currentDesign.bubbles.length) return;
-    const list = [...currentDesign.bubbles];
-    const temp = list[index];
-    list[index] = list[targetIdx];
-    list[targetIdx] = temp;
-    commitDesignState(currentDesign.balloons, list, targetIdx, true);
-  };
+  const handleTwistTogether = useCallback(
+    (indices: number[]) => {
+      const res = twistTogether(currentDesign.balloons, currentDesign.bubbles, indices);
+      if ("error" in res) {
+        showToast(res.error);
+        return;
+      }
+      commitDesignState(res.balloons, res.bubbles, indices, true);
+      showToast(res.summary);
+    },
+    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
+  );
 
-  const handleAddBalloon = (size: BalloonSize, colorHex: string, colorName: string) => {
-    const anchorIdx = Math.max(
-      0,
-      Math.min(selectedBubbleIndex, currentDesign.bubbles.length - 1)
-    );
-    const newBalId = `bal-${Date.now()}`;
+  const handleReleaseTwists = useCallback(
+    (indices: number[]) => {
+      const res = releaseTwists(currentDesign.balloons, currentDesign.bubbles, indices);
+      commitDesignState(res.balloons, res.bubbles, indices, true);
+      showToast("Unlocked back to plain twists.");
+    },
+    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
+  );
+
+  const handleEqualizeLengths = useCallback(
+    (indices: number[]) => {
+      const res = equalizeLengths(currentDesign.balloons, currentDesign.bubbles, indices);
+      commitDesignState(res.balloons, res.bubbles, indices, false);
+      showToast("Lengths equalized.");
+    },
+    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
+  );
+
+  /* ---------------- balloons ---------------- */
+
+  const handleAddBalloon = (req: AddBalloonRequest) => {
+    const newBalId = `bal-${Date.now().toString(36)}`;
+    // Standard finger count for the size plus two fingers of headroom for twists
+    const tail = Math.round((defaultTailInches(req.size) + 1.6) * 4) / 4;
     const newBal: BalloonSpec = {
       id: newBalId,
-      name: `Accent ${size} Balloon`,
-      size,
-      color: colorHex,
-      colorName,
-      inflatedLengthInches: 46,
-      tailLengthInches: 14,
-      tailFingers: 6,
-      burpNote: "Burp 1 puff before tying into joint.",
+      name: `${req.colorName} ${req.size}`,
+      size: req.size,
+      color: req.colorHex,
+      colorName: req.colorName,
+      inflatedLengthInches: 60 - tail,
+      tailLengthInches: tail,
+      tailFingers: Math.round((tail / 0.8) * 10) / 10,
+      burpNote: req.attachTo ? "Burp one puff before tying into the joint." : "Burp one puff before tying.",
       order: currentDesign.balloons.length + 1,
-      attachTo: { bubbleIndex: anchorIdx, end: "end" },
+      attachTo: req.attachTo ?? undefined,
     };
-    const starterBubble: BubbleSpec = {
-      id: `b-${Date.now()}-newbal`,
-      balloonId: newBalId,
-      index: currentDesign.bubbles.length,
-      label: `${size} Accent Loop`,
-      lengthInches: size === "160" ? 3.5 : 4.5,
-      diameterInches: defaultDiameterForSize(size),
-      twistType: "loop",
-      isLoop: true,
-      color: colorHex,
-    };
-    commitDesignState(
-      [...currentDesign.balloons, newBal],
-      [...currentDesign.bubbles, starterBubble],
-      currentDesign.bubbles.length,
-      true
+    const nextBalloons = [...currentDesign.balloons, newBal];
+    let nextBubbles = currentDesign.bubbles;
+    if (req.withStarterBubble) {
+      const starter: BubbleSpec = {
+        id: newBubbleId(),
+        balloonId: newBalId,
+        index: currentDesign.bubbles.length,
+        label: `${req.colorName} Bubble 1`,
+        lengthInches: req.size === "160" ? 2.5 : 3.0,
+        diameterInches: defaultDiameterForSize(req.size),
+        twistType: "basic",
+        color: req.colorHex,
+      };
+      nextBubbles = [...currentDesign.bubbles, starter];
+    }
+    commitDesignState(nextBalloons, nextBubbles, req.withStarterBubble ? nextBubbles.length - 1 : undefined, true);
+    setActiveBalloonId(newBalId);
+    showToast(
+      req.attachTo
+        ? `Added ${req.size} ${req.colorName}, tied into bubble #${req.attachTo.bubbleIndex + 1}.`
+        : `Added a free-standing ${req.size} ${req.colorName}.`
     );
-    showToast(`Attached ${size} ${colorName} balloon at Bubble #${anchorIdx + 1}!`);
   };
 
   const handleDeleteBalloon = (balloonId: string) => {
     if (currentDesign.balloons.length <= 1) return;
     const updatedBalloons = currentDesign.balloons.filter((b) => b.id !== balloonId);
-    const fallbackBal = updatedBalloons[0];
-    const updatedBubbles = currentDesign.bubbles.map((b) =>
-      b.balloonId === balloonId
-        ? { ...b, balloonId: fallbackBal.id, color: fallbackBal.color }
-        : b
-    );
-    commitDesignState(updatedBalloons, updatedBubbles, 0, true);
-    showToast("Removed balloon & reassigned its bubbles");
+    const toDrop = currentDesign.bubbles.map((b, i) => (b.balloonId === balloonId ? i : -1)).filter((i) => i >= 0);
+    const res = deleteBubbles(updatedBalloons, currentDesign.bubbles, toDrop);
+    commitDesignState(res.balloons, res.bubbles, 0, true);
+    if (activeBalloonId === balloonId) setActiveBalloonId(updatedBalloons[0]?.id ?? null);
+    showToast(toDrop.length ? `Removed balloon and its ${toDrop.length} bubbles.` : "Removed balloon.");
   };
 
   const handleUpdateBalloon = (balloonId: string, updated: Partial<BalloonSpec>) => {
@@ -631,67 +535,80 @@ export default function BalloonAppPage() {
       return {
         ...b,
         color: updated.color || b.color,
-        diameterInches: updated.size
-          ? defaultDiameterForSize(updated.size)
-          : b.diameterInches,
+        diameterInches: updated.size ? defaultDiameterForSize(updated.size) : b.diameterInches,
       };
     });
-    commitDesignState(updatedBalloons, updatedBubbles, selectedBubbleIndex, false);
+    commitDesignState(updatedBalloons, updatedBubbles, undefined, false);
   };
+
+  /* ---------------- stability ---------------- */
 
   const handleApplyAutoFix = useCallback(
     (fix: StabilityAutoFix) => {
       const res = applyStabilityAutoFix(currentDesign.balloons, currentDesign.bubbles, fix);
-      commitDesignState(res.balloons, res.bubbles, selectedBubbleIndex, false);
-      showToast("🔧 Applied stability lock — step instructions synced!");
+      commitDesignState(res.balloons, res.bubbles, undefined, false);
+      showToast("Applied the fix. Steps updated.");
     },
-    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, selectedBubbleIndex, showToast]
+    [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]
   );
 
   const handleAutoStabilizeAll = useCallback(() => {
     const res = autoStabilizeSculpture(currentDesign.balloons, currentDesign.bubbles);
-    commitDesignState(res.balloons, res.bubbles, selectedBubbleIndex, false);
+    commitDesignState(res.balloons, res.bubbles, undefined, false);
     showToast(
       res.appliedCount > 0
-        ? `✅ Locked ${res.appliedCount} unstable seam${res.appliedCount > 1 ? "s" : ""}! Sculpture holds shape hands-free.`
-        : "✅ Sculpture is already 100% mechanically locked!"
+        ? `Locked ${res.appliedCount} unstable seam${res.appliedCount > 1 ? "s" : ""}. The sculpture now holds hands-free.`
+        : "The sculpture is already fully locked."
     );
-  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, selectedBubbleIndex, showToast]);
+  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, showToast]);
 
   const handleUpdateStep = (index: number, updated: Partial<StepSpec>) => {
     const updatedSteps = [...currentDesign.steps];
     updatedSteps[index] = { ...updatedSteps[index], ...updated };
     setDesignTierMap((prev) => ({
       ...prev,
-      [activeComplexity]: {
-        ...currentDesign,
-        steps: updatedSteps,
-      },
+      [activeComplexity]: { ...currentDesign, steps: updatedSteps },
     }));
-    showToast("Saved step note!");
+    showToast("Saved step note.");
   };
 
-  // Keyboard shortcuts for snappy 3D sculpting (`Delete` removes bubble, `[` / `]` steps build)
+  /* ---------------- keyboard ---------------- */
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "Delete" || e.key === "Backspace") {
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedBubbleIndex !== null) {
         e.preventDefault();
         handleDeleteBubble(selectedBubbleIndex);
       } else if (e.key === "[") {
         handleSelectStep(currentStepIndex - 1);
       } else if (e.key === "]") {
         handleSelectStep(currentStepIndex + 1);
+      } else if (e.key === "Escape") {
+        handleClearSelection();
+      } else if ((e.key === "a" || e.key === "A") && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        handleSelectMany(currentDesign.bubbles.map((_, i) => i));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentStepIndex, handleDeleteBubble, handleSelectStep, selectedBubbleIndex]);
+  }, [
+    currentDesign.bubbles,
+    currentStepIndex,
+    handleClearSelection,
+    handleDeleteBubble,
+    handleSelectMany,
+    handleSelectStep,
+    selectedBubbleIndex,
+  ]);
+
+  /* ---------------- export / save ---------------- */
 
   const handleCapturePng = () => {
     setBuildMode("final");
-    showToast("Rendering clean high-res 3D Latex PNG…");
+    showToast("Rendering a clean high-res PNG…");
     setTimeout(() => {
       if (viewerRef.current) {
         const dataUrl = viewerRef.current.exportPng({ title: currentDesign.title });
@@ -703,7 +620,7 @@ export default function BalloonAppPage() {
 
   const handleSaveToDatabase = async () => {
     try {
-      showToast("Saving design to database...");
+      showToast("Saving design…");
       const res = await fetch("/api/designs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -721,139 +638,109 @@ export default function BalloonAppPage() {
           sourcePrompt: currentDesign.sourcePrompt,
         }),
       });
-
-      if (res.ok) {
-        showToast("✅ Design saved to database!");
-      } else {
-        showToast("Error saving design to database.");
-      }
+      showToast(res.ok ? "Design saved." : "Could not save the design.");
     } catch {
-      showToast("Failed to connect to database API.");
+      showToast("Could not reach the database.");
     }
   };
 
+  const untwistCount = liveSim.stability.untwistCount;
+  const worstAir = airByBalloon.find((a) => a.air.status === "over_budget" || a.air.status === "pop_risk");
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-amber-500 selection:text-slate-950">
-      {/* Toast Notification */}
+    <div className="flex min-h-screen flex-col text-slate-100 selection:bg-amber-400 selection:text-slate-950">
       {toastMessage && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-slate-950 font-bold px-4 py-2 rounded-xl shadow-2xl border border-amber-300 flex items-center gap-2 text-xs sm:text-sm">
-          <span>🎈</span>
-          <span>{toastMessage}</span>
+        <div className="hud fixed left-1/2 top-4 z-50 -translate-x-1/2 border-amber-400/40 px-4 py-2 text-sm font-medium text-amber-100">
+          {toastMessage}
         </div>
       )}
 
-      {/* Top Navbar */}
-      <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-6 py-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-500 flex items-center justify-center text-xl shadow-lg ring-2 ring-white/10">
-            🎈
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-black tracking-wide text-white">TwistCraft Studio</h1>
-              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                3D Latex Physics &amp; Step Compiler
-              </span>
+      {/* Header */}
+      <header className="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/85 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-3 px-4 py-2.5 md:px-6">
+          <div className="flex items-center gap-2.5">
+            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-amber-300 via-rose-400 to-indigo-500 shadow ring-1 ring-white/10" />
+            <div className="leading-tight">
+              <div className="text-sm font-semibold text-white">TwistCraft Studio</div>
+              <div className="text-[11px] text-slate-500">Balloon twisting CAD</div>
             </div>
-            <p className="text-xs text-slate-400">
-              Sculpt directly inside the 3D Smooth Latex Simulation (160 / 260 / 360) · Live untwist physics · Auto-compiled step instructions
-            </p>
           </div>
-        </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setIsEncyclopediaOpen(true)}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5"
-          >
-            <span>📖</span>
-            <span>Twist Encyclopedia</span>
-          </button>
+          <div className="mx-2 hidden h-6 w-px bg-slate-800 md:block" />
 
-          <button
-            onClick={handleStartBlankSlate}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 hover:text-amber-300 text-xs font-semibold border border-amber-500/30 transition flex items-center gap-1.5"
-          >
-            <span>✨</span>
-            <span>Blank Slate</span>
-          </button>
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-white">{currentDesign.title}</div>
+              <div className="truncate text-[11px] text-slate-500">
+                {bubbleCount} bubble{bubbleCount !== 1 ? "s" : ""} · {currentDesign.balloons.length} balloon
+                {currentDesign.balloons.length !== 1 ? "s" : ""} · {currentDesign.steps.length} steps
+              </div>
+            </div>
+            <ComplexityTierSelector
+              designs={designTierMap}
+              activeComplexity={activeComplexity}
+              onSelectComplexity={(c) => {
+                setActiveComplexity(c);
+                setBuildMode("step");
+                setCurrentStepIndex(Math.max(0, designTierMap[c].steps.length - 1));
+                setSelectedIndices(designTierMap[c].bubbles.length ? [0] : []);
+                setActiveBalloonId(designTierMap[c].balloons[0]?.id ?? null);
+              }}
+            />
+          </div>
 
-          <button
-            onClick={handleSaveToDatabase}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition flex items-center gap-1.5"
-          >
-            <span>💾</span>
-            <span>Save</span>
-          </button>
-
-          <button
-            onClick={handleCapturePng}
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-bold transition flex items-center gap-1.5 shadow-lg"
-          >
-            <span>📸</span>
-            <span>Export Nice PNG</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setIsNewDesignOpen(true)} className="btn btn-primary">
+              <Plus className="h-3.5 w-3.5" /> New design
+            </button>
+            <button onClick={() => setIsEncyclopediaOpen(true)} className="btn btn-ghost" title="Twist encyclopedia">
+              <BookOpen className="h-4 w-4" />
+              <span className="hidden lg:inline">Twists</span>
+            </button>
+            <button onClick={handleSaveToDatabase} className="btn btn-ghost" title="Save to database">
+              <Save className="h-4 w-4" />
+              <span className="hidden lg:inline">Save</span>
+            </button>
+            <button onClick={handleCapturePng} className="btn btn-secondary" title="Export PNG & instruction card">
+              <Download className="h-4 w-4" />
+              <span className="hidden lg:inline">Export</span>
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* Main Workspace */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto p-4 md:p-6 space-y-6">
-        {/* 1. Item / Image -> 3 Balloon Tiers Converter */}
-        <PromptImageConverter
-          onDesignsGenerated={handleDesignsGenerated}
-          onStartBlankSlate={handleStartBlankSlate}
-        />
-
-        {/* 2. Three Complexity Tiers */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Three Complexity Levels (Judged by Bubbles &amp; Balloons)
-            </h2>
-            <span className="text-xs text-slate-400 font-mono">
-              Active Tier: <strong className="text-amber-400 capitalize">{activeComplexity}</strong> ·{" "}
-              {currentDesign.bubbles.length} bubbles · {currentDesign.balloons.length} balloon
-              {currentDesign.balloons.length !== 1 ? "s" : ""} · {currentDesign.steps.length} steps
-            </span>
-          </div>
-          <ComplexityTierSelector
-            designs={designTierMap}
-            activeComplexity={activeComplexity}
-            onSelectComplexity={(c) => {
-              setActiveComplexity(c);
-              setBuildMode("step");
-              setCurrentStepIndex(Math.max(0, designTierMap[c].steps.length - 1));
-              setSelectedBubbleIndex(0);
-            }}
-          />
-        </div>
-
-        {/* 3. Side-by-Side Interactive 3D Smooth Latex Studio + Synchronized Step Instructions */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* LEFT: 3D Smooth Latex Simulation with built-in drag handles, drag-drop twist palette & physics */}
-          <div className="lg:col-span-7 space-y-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 shadow-xl space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-lg shrink-0">🎈</span>
-                  <div className="min-w-0">
-                    <h3 className="font-bold text-sm text-white truncate">{currentDesign.title}</h3>
-                    <div className="text-[11px] text-slate-400">
-                      Drag <span className="text-cyan-400 font-semibold">cyan cone</span> to resize length ·{" "}
-                      <span className="text-pink-400 font-semibold">pink dot</span> for diameter ·{" "}
-                      <span className="text-amber-400 font-semibold">gold gem</span> to bend/turn · drag twist chips onto any bubble!
-                    </div>
-                  </div>
+      {/* Workspace */}
+      <main className="mx-auto w-full max-w-[1600px] flex-1 p-4 md:p-6">
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-12">
+          {/* Viewer */}
+          <div className="space-y-4 xl:col-span-8">
+            <div className="panel overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-2.5">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {untwistCount > 0 ? (
+                    <span className="chip chip-danger">{untwistCount} twist{untwistCount > 1 ? "s" : ""} will unravel</span>
+                  ) : (
+                    <span className="chip chip-ok">Stable · {liveSim.stability.lockedJoints}/{liveSim.stability.totalJoints} joints locked</span>
+                  )}
+                  {worstAir ? (
+                    <span className="chip chip-danger">
+                      {worstAir.balloon.name}: {worstAir.air.status === "over_budget" ? "out of balloon" : "pop risk"}
+                    </span>
+                  ) : (
+                    airByBalloon.map(({ balloon, air }) => (
+                      <span key={balloon.id} className="chip chip-muted" title={air.statusMessage}>
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: balloon.color }} />
+                        tail {air.tailRemainingInches}″ · {air.untwistedInches}″ untwisted
+                      </span>
+                    ))
+                  )}
                 </div>
-                <button
-                  onClick={handleCapturePng}
-                  className="text-xs px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition font-bold shrink-0"
-                >
-                  📸 Snapshot PNG
+                <button onClick={handleCapturePng} className="btn btn-ghost btn-xs">
+                  <Camera className="h-3.5 w-3.5" /> Snapshot
                 </button>
               </div>
 
-              <div className="w-full h-[585px]">
+              <div className="h-[600px] w-full">
                 <ThreeBalloonViewer
                   ref={viewerRef}
                   balloons={currentDesign.balloons}
@@ -864,24 +751,32 @@ export default function BalloonAppPage() {
                   onBuildModeChange={setBuildMode}
                   onSelectStep={handleSelectStep}
                   selectedBubbleIndex={selectedBubbleIndex}
+                  selectedBubbleIndices={validSelection}
                   onSelectBubble={handleSelectBubble}
+                  onClearSelection={handleClearSelection}
                   onUpdateBubble={handleUpdateBubble}
                   onAddTwistPreset={handleAddTwistPreset}
                   onDeleteBubble={handleDeleteBubble}
                   onDuplicateBubble={handleDuplicateBubble}
+                  onSplitBubble={handleSplitBubble}
+                  onTwistTogether={handleTwistTogether}
+                  onReleaseTwists={handleReleaseTwists}
+                  onEqualizeLengths={handleEqualizeLengths}
                   onAddBalloon={handleAddBalloon}
                   onUpdateBalloon={handleUpdateBalloon}
+                  activeBalloonId={activeBalloonId}
+                  onSetActiveBalloon={setActiveBalloonId}
                   onApplyAutoFix={handleApplyAutoFix}
                   onAutoStabilizeAll={handleAutoStabilizeAll}
                   showLabels={showLabels}
                   onToggleLabels={() => setShowLabels((v) => !v)}
                   showGhost={showGhost}
                   onToggleGhost={() => setShowGhost((v) => !v)}
+                  className="h-full w-full"
                 />
               </div>
             </div>
 
-            {/* Step Build Playback Transport */}
             <StepPlaybackBar
               steps={currentDesign.steps}
               bubbles={currentDesign.bubbles}
@@ -897,51 +792,31 @@ export default function BalloonAppPage() {
             />
           </div>
 
-          {/* RIGHT: Auto-Compiled Step Instructions + Sequence CAD + Stability & Tail Physics */}
-          <div className="lg:col-span-5 space-y-4">
-            <div className="flex items-center justify-between bg-slate-900 p-1.5 rounded-xl border border-slate-800 gap-1">
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  onClick={() => setRightPanelTab("instructions")}
-                  className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                    rightPanelTab === "instructions"
-                      ? "bg-amber-500 text-slate-950 shadow"
-                      : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  <span>🪜</span>
-                  <span>Step Instructions ({currentDesign.steps.length})</span>
-                </button>
-
-                <button
-                  onClick={() => setRightPanelTab("cad_editor")}
-                  className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                    rightPanelTab === "cad_editor"
-                      ? "bg-amber-500 text-slate-950 shadow"
-                      : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  <span>🛠️</span>
-                  <span>Sequence &amp; Balloons</span>
-                </button>
-
-                <button
-                  onClick={() => setRightPanelTab("telemetry")}
-                  className={`px-3 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                    rightPanelTab === "telemetry"
-                      ? "bg-amber-500 text-slate-950 shadow"
-                      : !liveSim.stability.isStable
-                      ? "bg-rose-950/70 text-rose-300 border border-rose-500/40"
-                      : "text-slate-400 hover:text-white"
-                  }`}
-                >
-                  <span>{liveSim.stability.isStable ? "⚖️" : "⚠️"}</span>
-                  <span>
-                    Stability &amp; Tail
-                    {!liveSim.stability.isStable ? ` (${liveSim.stability.untwistCount})` : ""}
-                  </span>
-                </button>
-              </div>
+          {/* Side panel */}
+          <div className="space-y-3 xl:col-span-4">
+            <div className="panel flex items-center gap-1 p-1">
+              <button
+                onClick={() => setRightPanelTab("instructions")}
+                className={`tab ${rightPanelTab === "instructions" ? "tab-active" : ""}`}
+              >
+                <ListOrdered className="h-4 w-4" /> Steps
+                <span className="chip chip-muted ml-0.5 px-1.5">{currentDesign.steps.length}</span>
+              </button>
+              <button
+                onClick={() => setRightPanelTab("cad_editor")}
+                className={`tab ${rightPanelTab === "cad_editor" ? "tab-active" : ""}`}
+              >
+                <Layers className="h-4 w-4" /> Build
+              </button>
+              <button
+                onClick={() => setRightPanelTab("telemetry")}
+                className={`tab ${rightPanelTab === "telemetry" ? "tab-active" : ""} ${
+                  untwistCount > 0 && rightPanelTab !== "telemetry" ? "text-rose-300" : ""
+                }`}
+              >
+                <Scale className="h-4 w-4" /> Stability &amp; air
+                {untwistCount > 0 && <span className="chip chip-danger ml-0.5 px-1.5">{untwistCount}</span>}
+              </button>
             </div>
 
             {rightPanelTab === "instructions" && (
@@ -951,7 +826,7 @@ export default function BalloonAppPage() {
                 bubbles={currentDesign.bubbles}
                 currentStepIndex={currentStepIndex}
                 onSelectStep={handleSelectStep}
-                onSelectBubble={handleSelectBubble}
+                onSelectBubble={(i) => handleSelectBubble(i)}
                 onUpdateStep={handleUpdateStep}
                 onOpenTwistInfo={() => setIsEncyclopediaOpen(true)}
                 onExportInstructions={handleCapturePng}
@@ -963,11 +838,16 @@ export default function BalloonAppPage() {
                 balloons={currentDesign.balloons}
                 bubbles={currentDesign.bubbles}
                 selectedBubbleIndex={selectedBubbleIndex}
+                selectedBubbleIndices={validSelection}
+                activeBalloonId={activeBalloonId}
+                onSetActiveBalloon={setActiveBalloonId}
                 onSelectBubble={handleSelectBubble}
                 onUpdateBubble={(idx, upd) => handleUpdateBubble(idx, upd, false)}
-                onAddBubble={handleAddBubble}
+                onAddBubble={(balloonId) => handleAddTwistPreset("basic", undefined, balloonId)}
                 onDeleteBubble={handleDeleteBubble}
                 onMoveBubble={handleMoveBubble}
+                onSplitBubble={handleSplitBubble}
+                onTwistTogether={handleTwistTogether}
                 onAddBalloon={handleAddBalloon}
                 onDeleteBalloon={handleDeleteBalloon}
                 onUpdateBalloon={handleUpdateBalloon}
@@ -977,111 +857,103 @@ export default function BalloonAppPage() {
             )}
 
             {rightPanelTab === "telemetry" && (
-              <div className="space-y-4">
-                {/* Physical Twist Stability Rules Audit Panel */}
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
+              <div className="space-y-3">
+                <div className="panel p-4">
+                  <div className="mb-3 flex items-start justify-between gap-2">
                     <div>
-                      <h3 className="font-bold text-sm text-white">
-                        Twist Stability &amp; Untwist Physics Audit
-                      </h3>
-                      <p className="text-xs text-slate-400">
-                        Checks every seam for self-locking mechanics (Lock Pairs, Pinch/Toe Twists, Loops, 3-Bubble Bird Bodies, Apple Links &amp; Tied Knots).
+                      <h3 className="panel-title">Twist stability</h3>
+                      <p className="panel-sub">
+                        Every seam is checked for a self-locking mechanism: lock pairs, pinch and toe
+                        twists, loops, bird bodies, apple links and tied knots.
                       </p>
                     </div>
                     {!liveSim.stability.isStable && (
-                      <button
-                        onClick={handleAutoStabilizeAll}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow shrink-0"
-                      >
-                        🔧 Lock All ({liveSim.stability.issues.length})
+                      <button onClick={handleAutoStabilizeAll} className="btn btn-success shrink-0">
+                        <Wrench className="h-3.5 w-3.5" /> Lock all
                       </button>
                     )}
                   </div>
 
                   {liveSim.stability.issues.length === 0 ? (
-                    <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-xl p-3.5 text-xs text-emerald-200 flex items-center gap-3">
-                      <span className="text-2xl">🔒</span>
-                      <div>
-                        <div className="font-bold text-emerald-300">
-                          100% Mechanically Stable ({liveSim.stability.lockedJoints}/{liveSim.stability.totalJoints} joints anchored)
-                        </div>
-                        <div className="text-emerald-200/80 mt-0.5">
-                          No twists will spin open or unravel when you release your hands. Click &ldquo;🖐️ Test Let Go&rdquo; in the 3D viewport to verify!
-                        </div>
+                    <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 p-3.5 text-xs text-emerald-100">
+                      <div className="font-semibold text-emerald-200">
+                        Fully locked: {liveSim.stability.lockedJoints}/{liveSim.stability.totalJoints} joints anchored
+                      </div>
+                      <div className="mt-0.5 text-emerald-200/80">
+                        Nothing will spin open when you let go. Use “Let go” in the viewport to see it hold.
                       </div>
                     </div>
                   ) : (
-                    <div className="space-y-2.5">
+                    <div className="space-y-2">
                       {liveSim.stability.issues.map((issue) => (
                         <div
                           key={issue.id}
-                          className={`rounded-xl p-3 border text-xs space-y-1.5 ${
+                          className={`space-y-1 rounded-xl border p-3 text-xs ${
                             issue.severity === "will_untwist"
-                              ? "bg-rose-950/35 border-rose-500/50 text-rose-100"
-                              : "bg-amber-950/30 border-amber-500/40 text-amber-100"
+                              ? "border-rose-400/30 bg-rose-400/10 text-rose-100"
+                              : "border-amber-400/30 bg-amber-400/10 text-amber-100"
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-bold">
-                              {issue.severity === "will_untwist" ? "⚠️ " : "⚡ "}
-                              {issue.title}
-                            </span>
+                            <span className="font-semibold">{issue.title}</span>
                             <button
                               onClick={() => handleApplyAutoFix(issue.fix)}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] shrink-0 transition"
+                              className="btn btn-success btn-xs shrink-0"
                             >
-                              🔧 {issue.fixLabel}
+                              {issue.fixLabel}
                             </button>
                           </div>
-                          <p className="text-[11px] opacity-85">{issue.explanation}</p>
-                          <p className="text-[11px] font-semibold text-amber-300">
-                            When hands release: {issue.whatHappensWhenReleased}
-                          </p>
+                          <p className="opacity-85">{issue.explanation}</p>
+                          <p className="font-medium opacity-90">When released: {issue.whatHappensWhenReleased}</p>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
 
-                {/* Balloon Tail Capacity Gauges */}
-                {currentDesign.balloons.map((bal) => (
-                  <TailAllowanceMeter
-                    key={bal.id}
-                    balloon={bal}
-                    bubbles={currentDesign.bubbles}
-                  />
-                ))}
+                <div className="panel p-4">
+                  <h3 className="panel-title">Air budget</h3>
+                  <p className="panel-sub mb-3">
+                    Each bubble uses up inflated balloon. Each twist squeezes air forward into the
+                    uninflated tail, so the tail shrinks as you build.
+                    {stepVisibility ? " Showing the state at the current step." : ""}
+                  </p>
+                  <div className="space-y-3">
+                    {currentDesign.balloons.map((bal) => (
+                      <TailAllowanceMeter
+                        key={bal.id}
+                        balloon={bal}
+                        bubbles={currentDesign.bubbles}
+                        formed={stepVisibility?.formed ?? null}
+                        onUpdateBalloon={handleUpdateBalloon}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
         </div>
       </main>
 
-      <footer className="mt-auto border-t border-slate-900 bg-slate-950/80 px-6 py-5 text-center text-xs text-slate-500">
-        <div className="flex flex-wrap items-center justify-center gap-4 mb-1">
-          <span>Standard Twister Sizes: 160, 260, 360</span>
-          <span>•</span>
-          <span>17 Twist Formations</span>
-          <span>•</span>
-          <span>Real Twist Stability &amp; Untwist Physics</span>
-          <span>•</span>
-          <span>1:1 Simulation-Compiled Step Instructions</span>
-        </div>
-        <p>TwistCraft Studio © 2026.</p>
+      <footer className="border-t border-slate-900 px-6 py-4 text-center text-xs text-slate-600">
+        TwistCraft Studio · 160 / 260 / 360 twisters · 17 twist formations · simulation-compiled instructions
       </footer>
+
+      <NewDesignModal
+        isOpen={isNewDesignOpen}
+        onClose={() => setIsNewDesignOpen(false)}
+        onDesignsGenerated={handleDesignsGenerated}
+        onStartBlankSlate={handleStartBlankSlate}
+      />
 
       <TwistEncyclopediaModal
         isOpen={isEncyclopediaOpen}
         onClose={() => setIsEncyclopediaOpen(false)}
         onSelectTwist={(t) => {
-          handleUpdateBubble(selectedBubbleIndex, {
-            twistType: t,
-            isLoop: t === "loop",
-            isPinch: t === "pinch" || t === "toe",
-            isTulip: t === "tulip" || t === "tulip_chain",
-          });
-          showToast(`Changed Bubble #${selectedBubbleIndex + 1} to ${t} twist!`);
+          if (selectedBubbleIndex === null) return;
+          handleUpdateBubble(selectedBubbleIndex, { twistType: t, ...twistFlags(t) });
+          showToast(`Bubble #${selectedBubbleIndex + 1} is now a ${t.replace(/_/g, " ")} twist.`);
         }}
       />
 

@@ -1,5 +1,6 @@
 import { BalloonSpec, BubbleSpec, ComplexityLevel, FullDesign } from "@/types/balloon";
 import { generateStepsFromSimulation } from "./stepGenerator";
+import { fitTailForBubbles } from "./balloonAir";
 
 function buildDesign(params: {
   id: string;
@@ -22,6 +23,17 @@ function buildDesign(params: {
     index,
     color: balloonColors.get(bubble.balloonId) ?? bubble.color,
   }));
+  // Inflate each balloon just enough for its bubbles (plus the air its twists
+  // squeeze into the tail) so no long untwisted leftover trails off the model.
+  const fittedBalloons = params.balloons.map((bal) => {
+    const tail = fitTailForBubbles(bal, normalizedBubbles);
+    return {
+      ...bal,
+      tailLengthInches: tail,
+      tailFingers: Math.round((tail / 0.8) * 10) / 10,
+      inflatedLengthInches: Math.round((60 - tail) * 4) / 4,
+    };
+  });
   return {
     id: params.id,
     title: params.title,
@@ -30,11 +42,11 @@ function buildDesign(params: {
     complexity: params.complexity,
     sourceType: params.sourceType || "preset",
     sourcePrompt: params.sourcePrompt,
-    balloonCount: params.balloons.length,
+    balloonCount: fittedBalloons.length,
     bubbleCount: normalizedBubbles.length,
-    balloons: params.balloons,
+    balloons: fittedBalloons,
     bubbles: normalizedBubbles,
-    steps: generateStepsFromSimulation(params.balloons, normalizedBubbles),
+    steps: generateStepsFromSimulation(fittedBalloons, normalizedBubbles),
     annotations: params.annotations || [],
     isPreset: params.isPreset ?? params.sourceType === "preset",
   };

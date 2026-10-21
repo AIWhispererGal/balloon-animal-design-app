@@ -7,27 +7,63 @@ import React, {
   useImperativeHandle,
   forwardRef,
   useMemo,
+  useCallback,
 } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import {
-  BalloonSize,
+  Bird,
+  Boxes,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Circle,
+  CircleDashed,
+  Copy,
+  Equal,
+  Flower2,
+  Ghost,
+  Hand,
+  Hash,
+  Link2,
+  Maximize2,
+  PawPrint,
+  Pin,
+  Plus,
+  RotateCw,
+  Scissors,
+  Shell,
+  Shield,
+  Trash2,
+  Unlink,
+  Waves,
+  Wrench,
+  X,
+  Zap,
+} from "lucide-react";
+import {
   BalloonSpec,
   BubbleSpec,
   StabilityAutoFix,
   StepSpec,
   TwistType,
 } from "@/types/balloon";
-import { TWISTER_COLORS, TWIST_ENCYCLOPEDIA, inchesToFingers } from "@/lib/balloonConstants";
+import { TWIST_ENCYCLOPEDIA, inchesToFingers } from "@/lib/balloonConstants";
 import {
   BubbleLayout,
   UNIT,
   Vec3,
   computeBalloonLayout,
   getStepVisibility,
-  roundQuarter,
 } from "@/lib/balloonLayout";
+import { computeAirBudget } from "@/lib/balloonAir";
+import { SplitMode, twistFlags } from "@/lib/designEdits";
+import { AddBalloonPopover, AddBalloonRequest } from "./AddBalloonPopover";
+import { ColorPicker } from "./ColorPicker";
+import { SplitMenu } from "./SplitMenu";
+import { AirBudgetBar } from "./AirBudgetBar";
 
 export type BuildViewMode = "step" | "final";
 
@@ -61,13 +97,21 @@ interface ThreeBalloonViewerProps {
   onBuildModeChange?: (mode: BuildViewMode) => void;
   onSelectStep?: (stepIdx: number) => void;
   selectedBubbleIndex?: number | null;
-  onSelectBubble?: (index: number) => void;
+  selectedBubbleIndices?: number[];
+  onSelectBubble?: (index: number, additive?: boolean) => void;
+  onClearSelection?: () => void;
   onUpdateBubble?: (index: number, updated: Partial<BubbleSpec>, syncPartner?: boolean) => void;
-  onAddTwistPreset?: (preset: AddTwistPresetKind, afterBubbleIndex?: number) => void;
+  onAddTwistPreset?: (preset: AddTwistPresetKind, afterBubbleIndex?: number, balloonId?: string) => void;
   onDeleteBubble?: (index: number) => void;
   onDuplicateBubble?: (index: number) => void;
-  onAddBalloon?: (size: BalloonSize, colorHex: string, colorName: string) => void;
+  onSplitBubble?: (index: number, mode: SplitMode) => void;
+  onTwistTogether?: (indices: number[]) => void;
+  onReleaseTwists?: (indices: number[]) => void;
+  onEqualizeLengths?: (indices: number[]) => void;
+  onAddBalloon?: (req: AddBalloonRequest) => void;
   onUpdateBalloon?: (balloonId: string, updated: Partial<BalloonSpec>) => void;
+  activeBalloonId?: string | null;
+  onSetActiveBalloon?: (id: string | null) => void;
   onApplyAutoFix?: (fix: StabilityAutoFix) => void;
   onAutoStabilizeAll?: () => void;
   showLabels?: boolean;
@@ -81,39 +125,38 @@ interface ThreeBalloonViewerProps {
 const tv = (v: Vec3) => new THREE.Vector3(v[0], v[1], v[2]);
 const HIGHLIGHT = "#FACC15";
 const SELECT_COLOR = "#22D3EE";
+const MULTI_COLOR = "#67E8F9";
 const DANGER_COLOR = "#F43F5E";
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 const ADD_TWIST_PALETTE: Array<{
   kind: AddTwistPresetKind;
   label: string;
-  icon: string;
+  Icon: React.ComponentType<{ className?: string }>;
   convertTwist: TwistType;
   hint: string;
 }> = [
-  { kind: "basic", label: "Basic", icon: "🫧", convertTwist: "basic", hint: "Single bubble twist (hold until locked)" },
-  { kind: "lock_pair", label: "Lock Pair", icon: "🔒", convertTwist: "lock", hint: "2 folded bubbles locked together (ears / legs)" },
-  { kind: "pinch", label: "Pinch / Ear", icon: "🤏", convertTwist: "pinch", hint: "Self-locking 90° friction pinch joint" },
-  { kind: "loop", label: "Loop", icon: "➰", convertTwist: "loop", hint: "Self-locking teardrop petal / guard loop" },
-  { kind: "toe", label: "Toe Paw", icon: "🐾", convertTwist: "toe", hint: "Mini paw pinch twist" },
-  { kind: "tulip", label: "Tulip / Apple", icon: "🌷", convertTwist: "tulip", hint: "Inverted nozzle dimple twist (+ lock pinch)" },
-  { kind: "bird_body", label: "3-Roll Body", icon: "🐦", convertTwist: "bird_body", hint: "3-bubble Bird Body roll-through prism" },
-  { kind: "spiral", label: "Spiral", icon: "🌀", convertTwist: "spiral", hint: "Coiled corkscrew spiral segment" },
-  { kind: "s_hook", label: "S-Hook", icon: "〰️", convertTwist: "s_hook", hint: "Warm hand-curved S-contour" },
-  { kind: "z_bend", label: "Z-Bend", icon: "⚡", convertTwist: "z_bend", hint: "Sharp accordion Z-fold" },
-  { kind: "side_bubble", label: "Side Rail", icon: "🛡️", convertTwist: "side_bubble", hint: "Flank side bubble" },
-  { kind: "cut_tail_bubbles", label: "Pom-Pom Tip", icon: "✂️", convertTwist: "cut_tail_bubbles", hint: "Tied cut-tail with tiny bead pom-pom" },
+  { kind: "basic", label: "Basic", Icon: Circle, convertTwist: "basic", hint: "Single bubble twist (hold until locked)" },
+  { kind: "lock_pair", label: "Lock pair", Icon: Link2, convertTwist: "lock", hint: "Two folded bubbles locked together (ears, legs)" },
+  { kind: "pinch", label: "Pinch / ear", Icon: Pin, convertTwist: "pinch", hint: "Self-locking friction pinch at the joint" },
+  { kind: "loop", label: "Loop", Icon: CircleDashed, convertTwist: "loop", hint: "Self-locking teardrop petal or guard loop" },
+  { kind: "toe", label: "Toe paw", Icon: PawPrint, convertTwist: "toe", hint: "Tiny paw pinch twist" },
+  { kind: "tulip", label: "Tulip / apple", Icon: Flower2, convertTwist: "tulip", hint: "Inverted nozzle dimple twist with a lock pinch" },
+  { kind: "bird_body", label: "Bird body", Icon: Bird, convertTwist: "bird_body", hint: "Three bubbles rolled through as a bundle" },
+  { kind: "spiral", label: "Spiral", Icon: Shell, convertTwist: "spiral", hint: "Coiled corkscrew segment" },
+  { kind: "s_hook", label: "S-hook", Icon: Waves, convertTwist: "s_hook", hint: "Warm hand-curved S contour" },
+  { kind: "z_bend", label: "Z-bend", Icon: Zap, convertTwist: "z_bend", hint: "Sharp accordion fold" },
+  { kind: "side_bubble", label: "Side rail", Icon: Shield, convertTwist: "side_bubble", hint: "Flank bubble along the spine" },
+  { kind: "cut_tail_bubbles", label: "Pom-pom tip", Icon: Scissors, convertTwist: "cut_tail_bubbles", hint: "Tied cut tail with a tiny bead" },
 ];
 
-/**
- * Custom smooth latex sausage profile from y = 0 (pinched twist seam) to y = lengthUnits (pinched twist seam).
- * Every bubble starts & ends cleanly right at its exact 3D joints!
- */
+/** Smooth latex sausage profile from y = 0 to y = lengthUnits, pinched at both seams. */
 function createSmoothLatexSausageGeometry(radius: number, lengthUnits: number): THREE.LatheGeometry {
   const N = 26;
   const pts: THREE.Vector2[] = [];
   const capFrac = Math.min(0.42, (radius * 0.95) / Math.max(0.28, lengthUnits));
   for (let i = 0; i <= N; i++) {
-    const t = i / N; // 0 .. 1 along bubble axis
+    const t = i / N;
     let profile: number;
     if (t < capFrac) {
       const u = t / capFrac;
@@ -130,28 +173,45 @@ function createSmoothLatexSausageGeometry(radius: number, lengthUnits: number): 
   return new THREE.LatheGeometry(pts, 28);
 }
 
-/** Smooth invaginated Apple / Tulip Twist LatheGeometry with genuine recessed knot tunnel! */
+/** Apple / tulip twist with a recessed knot dimple. */
 function createTulipLatexGeometry(radius: number, lengthUnits: number): THREE.LatheGeometry {
   const pts: THREE.Vector2[] = [];
   const H = lengthUnits;
-  // Base pinched neck -> plump outer wall -> rounded front lip -> deep inverted inner dimple!
   const steps = 22;
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     const r = radius * (0.15 + 1.02 * Math.sin(Math.min(1, t * 1.12) * Math.PI * 0.86));
     pts.push(new THREE.Vector2(Math.max(0.03, r), t * H));
   }
-  // Curve lip inward into recessed apple core dimple
   pts.push(new THREE.Vector2(radius * 0.42, H * 0.98));
   pts.push(new THREE.Vector2(radius * 0.22, H * 0.72));
   pts.push(new THREE.Vector2(0.01, H * 0.58));
   return new THREE.LatheGeometry(pts, 28);
 }
 
-export const ThreeBalloonViewer = forwardRef<
-  ThreeBalloonViewerRef,
-  ThreeBalloonViewerProps
->(
+function disposeObject(o: THREE.Object3D) {
+  const mesh = o as THREE.Mesh;
+  if (mesh.geometry) mesh.geometry.dispose();
+  const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+  const disposeMat = (m: THREE.Material) => {
+    if (m.userData.shared) return;
+    const withMap = m as THREE.MeshBasicMaterial;
+    if (withMap.map && !withMap.map.userData.shared) withMap.map.dispose();
+    m.dispose();
+  };
+  if (Array.isArray(mat)) mat.forEach(disposeMat);
+  else if (mat) disposeMat(mat);
+}
+
+function clearGroup(g: THREE.Group) {
+  while (g.children.length > 0) {
+    const child = g.children[0];
+    g.remove(child);
+    child.traverse(disposeObject);
+  }
+}
+
+export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloonViewerProps>(
   (
     {
       balloons,
@@ -162,13 +222,21 @@ export const ThreeBalloonViewer = forwardRef<
       onBuildModeChange,
       onSelectStep,
       selectedBubbleIndex = 0,
+      selectedBubbleIndices,
       onSelectBubble,
+      onClearSelection,
       onUpdateBubble,
       onAddTwistPreset,
       onDeleteBubble,
       onDuplicateBubble,
+      onSplitBubble,
+      onTwistTogether,
+      onReleaseTwists,
+      onEqualizeLengths,
       onAddBalloon,
       onUpdateBalloon,
+      activeBalloonId,
+      onSetActiveBalloon,
       onApplyAutoFix,
       onAutoStabilizeAll,
       showLabels = true,
@@ -194,10 +262,13 @@ export const ThreeBalloonViewer = forwardRef<
 
     const pickMeshesRef = useRef<THREE.Object3D[]>([]);
     const gizmoMeshesRef = useRef<THREE.Object3D[]>([]);
+    const bubbleMeshesRef = useRef<Map<number, THREE.Mesh[]>>(new Map());
     const activeMatsRef = useRef<THREE.MeshPhysicalMaterial[]>([]);
     const dangerRingsRef = useRef<THREE.Mesh[]>([]);
     const finalSphereRef = useRef<THREE.Sphere | null>(null);
     const lastFitKeyRef = useRef<string>("");
+    const baseMatCacheRef = useRef<Map<string, THREE.MeshPhysicalMaterial>>(new Map());
+    const labelTexCacheRef = useRef<Map<string, THREE.CanvasTexture>>(new Map());
 
     const [isAutoRotating, setIsAutoRotating] = useState(autoRotateDefault);
     const [wireframe, setWireframe] = useState(false);
@@ -205,6 +276,7 @@ export const ThreeBalloonViewer = forwardRef<
     const [pairSync, setPairSync] = useState(true);
     const [hudOpen, setHudOpen] = useState(true);
     const [paletteOpen, setPaletteOpen] = useState(true);
+    const [splitMode, setSplitMode] = useState(false);
     const [dragReadout, setDragReadout] = useState<string | null>(null);
     const [cursorStyle, setCursorStyle] = useState<string>("grab");
     const [dropPreview, setDropPreview] = useState<{
@@ -213,43 +285,75 @@ export const ThreeBalloonViewer = forwardRef<
       convertMode: boolean;
     } | null>(null);
 
+    const multiSelection = useMemo(
+      () => (selectedBubbleIndices ?? (selectedBubbleIndex !== null ? [selectedBubbleIndex] : [])).filter(
+        (i) => i >= 0 && i < bubbles.length
+      ),
+      [selectedBubbleIndices, selectedBubbleIndex, bubbles.length]
+    );
+
     // Latest callbacks/data in refs so WebGL pointer listeners always have fresh state with zero re-mount
     const latestRef = useRef({
       balloons,
       bubbles,
       selectedBubbleIndex,
       pairSync,
+      splitMode,
       onSelectBubble,
       onUpdateBubble,
       onAddTwistPreset,
+      onSplitBubble,
     });
-    latestRef.current = {
-      balloons,
-      bubbles,
-      selectedBubbleIndex,
-      pairSync,
-      onSelectBubble,
-      onUpdateBubble,
-      onAddTwistPreset,
-    };
-
     const layoutSnapshot = useMemo(
       () => computeBalloonLayout(balloons, bubbles, { releasedHands }),
       [balloons, bubbles, releasedHands]
     );
     const layoutSnapshotRef = useRef(layoutSnapshot);
-    layoutSnapshotRef.current = layoutSnapshot;
+    useEffect(() => {
+      latestRef.current = {
+        balloons,
+        bubbles,
+        selectedBubbleIndex,
+        pairSync,
+        splitMode,
+        onSelectBubble,
+        onUpdateBubble,
+        onAddTwistPreset,
+        onSplitBubble,
+      };
+      layoutSnapshotRef.current = layoutSnapshot;
+    });
 
-    const fitCameraTo = (sphere: THREE.Sphere | null, keepDirection = true) => {
+    const vis = useMemo(
+      () =>
+        buildMode === "final" || releasedHands
+          ? {
+              formed: new Set(bubbles.map((_, i) => i)),
+              active: new Set<number>(),
+              introducedBalloons: new Set(balloons.map((b) => b.id)),
+            }
+          : (() => {
+              const v = getStepVisibility(steps, bubbles, balloons, currentStepIndex);
+              // A balloon with no bubbles yet is already inflated on the table
+              balloons.forEach((bal) => {
+                if (!bubbles.some((b) => b.balloonId === bal.id)) v.introducedBalloons.add(bal.id);
+              });
+              return v;
+            })(),
+      [buildMode, releasedHands, bubbles, balloons, steps, currentStepIndex]
+    );
+
+    const airByBalloon = useMemo(
+      () => new Map(balloons.map((bal) => [bal.id, computeAirBudget(bal, bubbles, vis.formed)])),
+      [balloons, bubbles, vis.formed]
+    );
+
+    const fitCameraTo = useCallback((sphere: THREE.Sphere | null, keepDirection = true) => {
       const camera = cameraRef.current;
       const controls = controlsRef.current;
       if (!camera || !controls || !sphere) return;
       const fovRad = (camera.fov * Math.PI) / 180;
-      const dist = THREE.MathUtils.clamp(
-        (sphere.radius / Math.sin(fovRad / 2)) * 1.05,
-        7.5,
-        75
-      );
+      const dist = THREE.MathUtils.clamp((sphere.radius / Math.sin(fovRad / 2)) * 1.05, 7.5, 75);
       let dir = new THREE.Vector3(0.45, 0.34, 1).normalize();
       if (keepDirection && camera.position.length() > 0.01) {
         dir = camera.position.clone().sub(controls.target).normalize();
@@ -258,7 +362,7 @@ export const ThreeBalloonViewer = forwardRef<
       camera.position.copy(dir.multiplyScalar(dist));
       controls.target.set(0, 0, 0);
       controls.update();
-    };
+    }, []);
 
     useImperativeHandle(ref, () => ({
       exportPng: (options = {}) => {
@@ -321,7 +425,7 @@ export const ThreeBalloonViewer = forwardRef<
       },
     }));
 
-    /* ---------------- scene setup + 3D handle drag engine ---------------- */
+    /* ---------------- scene setup + 3D handle drag engine (mounted once) ---------------- */
     useEffect(() => {
       const container = containerRef.current;
       if (!container) return;
@@ -330,7 +434,7 @@ export const ThreeBalloonViewer = forwardRef<
       const height = container.clientHeight || 520;
 
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x0b1220);
+      scene.background = new THREE.Color(0x0a0f1c);
       sceneRef.current = scene;
 
       const camera = new THREE.PerspectiveCamera(44, width / height, 0.1, 220);
@@ -352,7 +456,6 @@ export const ThreeBalloonViewer = forwardRef<
       container.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
-      // Studio PBR Environment for authentic shiny smooth latex reflections!
       const pmrem = new THREE.PMREMGenerator(renderer);
       const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
       scene.environment = envRT.texture;
@@ -380,7 +483,7 @@ export const ThreeBalloonViewer = forwardRef<
       fill.position.set(0, -10, 8);
       scene.add(fill);
 
-      const grid = new THREE.GridHelper(32, 32, 0x334155, 0x1e293b);
+      const grid = new THREE.GridHelper(32, 32, 0x1f2937, 0x111827);
       grid.position.y = -5;
       scene.add(grid);
       gridRef.current = grid;
@@ -399,7 +502,7 @@ export const ThreeBalloonViewer = forwardRef<
       gizmoGroupRef.current = gizmoGroup;
       labelGroupRef.current = labelGroup;
 
-      /* ----- Interactive 3D Handle Dragging + Bubble Picking ----- */
+      /* ----- picking + handle dragging ----- */
       const raycaster = new THREE.Raycaster();
       const dragPlane = new THREE.Plane();
       const hitPoint = new THREE.Vector3();
@@ -418,6 +521,7 @@ export const ThreeBalloonViewer = forwardRef<
             initialDiameter: number;
             initialBend: number;
             initialTurn: number;
+            lastApplied: string;
           };
 
       let dragSession: DragSession = null;
@@ -438,16 +542,10 @@ export const ThreeBalloonViewer = forwardRef<
         downY = e.clientY;
         setNdc(e.clientX, e.clientY);
 
-        // 1. Check 3D Gizmo Handles FIRST!
         const gizmoHits = raycaster.intersectObjects(gizmoMeshesRef.current, true);
         if (gizmoHits.length > 0) {
           const obj = gizmoHits[0].object;
-          const gKind = obj.userData.gizmoKind as
-            | "length"
-            | "diameter"
-            | "bend"
-            | "add_after"
-            | undefined;
+          const gKind = obj.userData.gizmoKind as "length" | "diameter" | "bend" | "add_after" | undefined;
           const bIdx = obj.userData.bubbleIndex as number;
           if (gKind === "add_after") {
             e.stopPropagation();
@@ -459,7 +557,6 @@ export const ThreeBalloonViewer = forwardRef<
             const b = latestRef.current.bubbles[bIdx];
             const lay = layoutSnapshotRef.current.layouts[bIdx];
             if (!lay) return;
-            const pivotOffset = pivot.position.clone();
             const worldDir = tv(lay.dir).normalize();
             const worldPerp = tv(lay.side).normalize();
             const camDir = new THREE.Vector3();
@@ -481,8 +578,8 @@ export const ThreeBalloonViewer = forwardRef<
               initialDiameter: b.diameterInches || 2.0,
               initialBend: b.bend ?? 0,
               initialTurn: b.turn ?? 0,
+              lastApplied: "",
             };
-            void pivotOffset;
             setCursorStyle("grabbing");
           }
         }
@@ -491,27 +588,27 @@ export const ThreeBalloonViewer = forwardRef<
       const onPointerMove = (e: PointerEvent) => {
         if (dragSession) {
           setNdc(e.clientX, e.clientY);
-          const curBubbles = latestRef.current.bubbles;
-          const b = curBubbles[dragSession.bubbleIndex];
+          const b = latestRef.current.bubbles[dragSession.bubbleIndex];
           if (!b) return;
 
           if (dragSession.mode === "length") {
             if (raycaster.ray.intersectPlane(dragPlane, hitPoint)) {
               const delta = hitPoint.clone().sub(dragSession.startWorld);
               const alongUnits = delta.dot(dragSession.axisWorld);
-              // Loop reach is ~0.44 * length, so scale sensitivity accordingly
               const factor = b.twistType === "loop" || b.isLoop ? 1 / (UNIT * 0.44) : 1 / UNIT;
               const rawInches = dragSession.initialLength + alongUnits * factor;
               const snapped = Math.max(0.5, Math.min(26, Math.round(rawInches * 4) / 4));
-              latestRef.current.onUpdateBubble?.(
-                dragSession.bubbleIndex,
-                { lengthInches: snapped },
-                latestRef.current.pairSync
-              );
+              const key = `L${snapped}`;
+              if (key !== dragSession.lastApplied) {
+                dragSession.lastApplied = key;
+                latestRef.current.onUpdateBubble?.(
+                  dragSession.bubbleIndex,
+                  { lengthInches: snapped },
+                  latestRef.current.pairSync
+                );
+              }
               setDragReadout(
-                `📏 ${b.label}: ${snapped.toFixed(2).replace(/\.00$/, "")}″ (${inchesToFingers(
-                  snapped
-                )} fingers)`
+                `${b.label}: ${snapped.toFixed(2).replace(/\.?0+$/, "")}″ (${inchesToFingers(snapped)} fingers)`
               );
             }
           } else if (dragSession.mode === "diameter") {
@@ -519,35 +616,33 @@ export const ThreeBalloonViewer = forwardRef<
               const delta = hitPoint.clone().sub(dragSession.startWorld);
               const radialUnits = delta.dot(dragSession.perpWorld);
               const rawDiam = dragSession.initialDiameter + radialUnits / 0.28;
-              const snapped = Math.max(0.75, Math.min(3.5, Math.round(rawDiam * 20) / 20));
-              latestRef.current.onUpdateBubble?.(
-                dragSession.bubbleIndex,
-                { diameterInches: Math.round(snapped * 4) / 4 },
-                latestRef.current.pairSync
-              );
-              setDragReadout(`↔️ ${b.label} Diameter: ${(Math.round(snapped * 4) / 4).toFixed(2)}″`);
+              const snapped = Math.max(0.75, Math.min(3.5, Math.round(rawDiam * 4) / 4));
+              const key = `D${snapped}`;
+              if (key !== dragSession.lastApplied) {
+                dragSession.lastApplied = key;
+                latestRef.current.onUpdateBubble?.(
+                  dragSession.bubbleIndex,
+                  { diameterInches: snapped },
+                  latestRef.current.pairSync
+                );
+              }
+              setDragReadout(`${b.label} diameter: ${snapped.toFixed(2)}″`);
             }
           } else if (dragSession.mode === "bend") {
             const dx = e.clientX - dragSession.startClientX;
             const dy = e.clientY - dragSession.startClientY;
-            const newBend = Math.max(
-              -165,
-              Math.min(165, Math.round((dragSession.initialBend - dy * 0.65) / 5) * 5)
-            );
-            const newTurn = Math.max(
-              -165,
-              Math.min(165, Math.round((dragSession.initialTurn + dx * 0.65) / 5) * 5)
-            );
-            latestRef.current.onUpdateBubble?.(dragSession.bubbleIndex, {
-              bend: newBend,
-              turn: newTurn,
-            });
-            setDragReadout(`🧭 ${b.label}: Bend ${newBend}° · Turn ${newTurn}°`);
+            const newBend = Math.max(-165, Math.min(165, Math.round((dragSession.initialBend - dy * 0.65) / 5) * 5));
+            const newTurn = Math.max(-165, Math.min(165, Math.round((dragSession.initialTurn + dx * 0.65) / 5) * 5));
+            const key = `B${newBend}T${newTurn}`;
+            if (key !== dragSession.lastApplied) {
+              dragSession.lastApplied = key;
+              latestRef.current.onUpdateBubble?.(dragSession.bubbleIndex, { bend: newBend, turn: newTurn });
+            }
+            setDragReadout(`${b.label}: bend ${newBend}° · turn ${newTurn}°`);
           }
           return;
         }
 
-        // Hover cursor feedback over 3D handles & bubbles
         setNdc(e.clientX, e.clientY);
         const gHit = raycaster.intersectObjects(gizmoMeshesRef.current, true)[0];
         if (gHit) {
@@ -556,7 +651,7 @@ export const ThreeBalloonViewer = forwardRef<
           return;
         }
         const bHit = raycaster.intersectObjects(pickMeshesRef.current, false)[0];
-        setCursorStyle(bHit ? "pointer" : "grab");
+        setCursorStyle(bHit ? (latestRef.current.splitMode ? "crosshair" : "pointer") : "grab");
       };
 
       const onPointerUp = (e: PointerEvent) => {
@@ -566,7 +661,7 @@ export const ThreeBalloonViewer = forwardRef<
           try {
             renderer.domElement.releasePointerCapture(e.pointerId);
           } catch {
-            // ignore if already released
+            // already released
           }
           setDragReadout(null);
           setCursorStyle("grab");
@@ -577,9 +672,30 @@ export const ThreeBalloonViewer = forwardRef<
         setNdc(e.clientX, e.clientY);
         const hits = raycaster.intersectObjects(pickMeshesRef.current, false);
         const hit = hits.find((h) => h.object.userData.bubbleIndex !== undefined);
-        if (hit) {
-          latestRef.current.onSelectBubble?.(hit.object.userData.bubbleIndex as number);
+        if (!hit) return;
+        const idx = hit.object.userData.bubbleIndex as number;
+
+        // Split mode: click a point along the bubble to put a new twist there
+        if (latestRef.current.splitMode && latestRef.current.onSplitBubble) {
+          const lay = layoutSnapshotRef.current.layouts[idx];
+          const b = latestRef.current.bubbles[idx];
+          if (lay && b) {
+            const local = hit.point.clone().sub(pivot.position);
+            const a = tv(lay.start);
+            const bEnd = tv(lay.end);
+            const seg = bEnd.clone().sub(a);
+            const segLen2 = seg.lengthSq();
+            const t = segLen2 > 1e-6 ? THREE.MathUtils.clamp(local.clone().sub(a).dot(seg) / segLen2, 0.05, 0.95) : 0.5;
+            const straight = lay.kind === "capsule" || lay.kind === "bird_rail" || lay.kind === "bent";
+            latestRef.current.onSplitBubble(
+              idx,
+              straight ? { kind: "at", inches: Math.round(b.lengthInches * t * 4) / 4 } : { kind: "equal", parts: 2 }
+            );
+          }
+          return;
         }
+
+        latestRef.current.onSelectBubble?.(idx, e.shiftKey || e.metaKey || e.ctrlKey);
       };
 
       renderer.domElement.addEventListener("pointerdown", onPointerDown);
@@ -617,6 +733,9 @@ export const ThreeBalloonViewer = forwardRef<
       ro.observe(container);
       window.addEventListener("resize", doResize);
 
+      const baseMatCache = baseMatCacheRef.current;
+      const labelTexCache = labelTexCacheRef.current;
+
       return () => {
         running = false;
         cancelAnimationFrame(raf);
@@ -625,6 +744,11 @@ export const ThreeBalloonViewer = forwardRef<
         renderer.domElement.removeEventListener("pointerdown", onPointerDown);
         renderer.domElement.removeEventListener("pointermove", onPointerMove);
         renderer.domElement.removeEventListener("pointerup", onPointerUp);
+        [modelGroup, ghostGroup, gizmoGroup, labelGroup].forEach(clearGroup);
+        baseMatCache.forEach((m) => m.dispose());
+        baseMatCache.clear();
+        labelTexCache.forEach((t) => t.dispose());
+        labelTexCache.clear();
         controls.dispose();
         envRT.dispose();
         pmrem.dispose();
@@ -636,126 +760,34 @@ export const ThreeBalloonViewer = forwardRef<
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    /* ---------------- rebuild 3D smooth latex scene + handles ---------------- */
-    useEffect(() => {
-      const pivot = pivotRef.current;
-      const modelGroup = modelGroupRef.current;
-      const ghostGroup = ghostGroupRef.current;
-      const gizmoGroup = gizmoGroupRef.current;
-      const labelGroup = labelGroupRef.current;
-      if (!pivot || !modelGroup || !ghostGroup || !gizmoGroup || !labelGroup) return;
-
-      const disposeGroup = (g: THREE.Group) => {
-        while (g.children.length > 0) {
-          const child = g.children[0];
-          g.remove(child);
-          child.traverse((o) => {
-            const mesh = o as THREE.Mesh;
-            if (mesh.geometry) mesh.geometry.dispose();
-            const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
-            const disposeMat = (m: THREE.Material) => {
-              const withMap = m as THREE.MeshBasicMaterial;
-              if (withMap.map) withMap.map.dispose();
-              m.dispose();
-            };
-            if (Array.isArray(mat)) mat.forEach(disposeMat);
-            else if (mat) disposeMat(mat);
-          });
-        }
-      };
-
-      disposeGroup(modelGroup);
-      disposeGroup(ghostGroup);
-      disposeGroup(gizmoGroup);
-      disposeGroup(labelGroup);
-      pickMeshesRef.current = [];
-      gizmoMeshesRef.current = [];
-      activeMatsRef.current = [];
-      dangerRingsRef.current = [];
-
-      if (!bubbles || bubbles.length === 0) return;
-
-      const { layouts, chains, stability } = layoutSnapshot;
-      const layoutByIndex = new Map(layouts.map((l) => [l.index, l]));
-
-      const vis =
-        buildMode === "final" || releasedHands
-          ? {
-              formed: new Set(bubbles.map((_, i) => i)),
-              active: new Set<number>(),
-              introducedBalloons: new Set(balloons.map((b) => b.id)),
-            }
-          : getStepVisibility(steps, bubbles, balloons, currentStepIndex);
-
-      const latexMat = (
-        hex: string,
-        opts: {
-          active?: boolean;
-          ghost?: boolean;
-          ghostOpacity?: number;
-          dropTarget?: boolean;
-          unraveled?: boolean;
-        } = {}
-      ) => {
-        if (opts.ghost) {
-          return new THREE.MeshBasicMaterial({
+    /* ---------------- materials (cached per color so rebuilds don't churn the GPU) ---------------- */
+    const baseLatexMat = useCallback(
+      (hex: string): THREE.MeshPhysicalMaterial => {
+        const key = `${hex}|${wireframe ? 1 : 0}`;
+        const cache = baseMatCacheRef.current;
+        let m = cache.get(key);
+        if (!m) {
+          m = new THREE.MeshPhysicalMaterial({
             color: new THREE.Color(hex),
-            transparent: true,
-            opacity: opts.ghostOpacity ?? 0.12,
-            depthWrite: false,
-          });
-        }
-        if (opts.dropTarget) {
-          return new THREE.MeshPhysicalMaterial({
-            color: new THREE.Color("#10B981"),
-            emissive: new THREE.Color("#10B981"),
-            emissiveIntensity: 0.55,
-            roughness: 0.16,
+            roughness: 0.18,
+            metalness: 0.01,
             clearcoat: 1.0,
-          });
-        }
-        if (opts.unraveled) {
-          return new THREE.MeshPhysicalMaterial({
-            color: new THREE.Color(hex).lerp(new THREE.Color(DANGER_COLOR), 0.35),
-            emissive: new THREE.Color(DANGER_COLOR),
-            emissiveIntensity: 0.25,
-            roughness: 0.22,
-            clearcoat: 0.95,
-            clearcoatRoughness: 0.1,
+            clearcoatRoughness: 0.09,
+            sheen: 0.3,
+            sheenRoughness: 0.35,
+            ior: 1.48,
             wireframe,
           });
+          m.userData.shared = true;
+          cache.set(key, m);
         }
-        if (opts.active) {
-          const m = new THREE.MeshPhysicalMaterial({
-            color: new THREE.Color(hex).lerp(new THREE.Color(HIGHLIGHT), 0.35),
-            emissive: new THREE.Color(HIGHLIGHT),
-            emissiveIntensity: 0.42,
-            roughness: 0.16,
-            metalness: 0.02,
-            clearcoat: 1.0,
-            clearcoatRoughness: 0.07,
-            sheen: 0.35,
-            wireframe,
-          });
-          activeMatsRef.current.push(m);
-          return m;
-        }
-        return new THREE.MeshPhysicalMaterial({
-          color: new THREE.Color(hex),
-          roughness: 0.18,
-          metalness: 0.01,
-          clearcoat: 1.0,
-          clearcoatRoughness: 0.09,
-          sheen: 0.3,
-          sheenRoughness: 0.35,
-          ior: 1.48,
-          wireframe,
-        });
-      };
+        return m;
+      },
+      [wireframe]
+    );
 
-      const Y = new THREE.Vector3(0, 1, 0);
-
-      const buildMesh = (l: BubbleLayout, mat: THREE.Material): THREE.Mesh => {
+    const buildMesh = useCallback(
+      (l: BubbleLayout, mat: THREE.Material, extras?: THREE.Group): THREE.Mesh => {
         const r = l.radiusUnits;
         const len = l.lengthUnits;
         const startV = tv(l.start);
@@ -765,7 +797,6 @@ export const ThreeBalloonViewer = forwardRef<
 
         switch (l.kind) {
           case "loop": {
-            // Authentic 3D teardrop latex loop tapering right into `l.start`!
             const reachV = endV.clone().sub(startV);
             const reach = Math.max(r * 1.8, reachV.length());
             const dNorm = dirV.clone().normalize();
@@ -776,48 +807,39 @@ export const ThreeBalloonViewer = forwardRef<
             for (let i = 0; i <= segs; i++) {
               const t = i / segs;
               const theta = t * Math.PI;
-              const along = Math.sin(theta) * reach;
-              const across = Math.sin(theta * 2) * width * 0.5;
               curvePts.push(
                 startV
                   .clone()
-                  .addScaledVector(dNorm, along)
-                  .addScaledVector(sideV, across)
+                  .addScaledVector(dNorm, Math.sin(theta) * reach)
+                  .addScaledVector(sideV, Math.sin(theta * 2) * width * 0.5)
               );
             }
-            const geo = new THREE.TubeGeometry(
-              new THREE.CatmullRomCurve3(curvePts),
-              40,
-              r * 0.8,
-              16,
-              false
+            mesh = new THREE.Mesh(
+              new THREE.TubeGeometry(new THREE.CatmullRomCurve3(curvePts), 40, r * 0.8, 16, false),
+              mat
             );
-            mesh = new THREE.Mesh(geo, mat);
             break;
           }
           case "pinch": {
-            // Plump self-locking pinch cushion nestled against the joint with crease groove
             const geo = new THREE.SphereGeometry(r * 1.02, 26, 20);
             const pos = geo.attributes.position;
             for (let i = 0; i < pos.count; i++) {
               const x = pos.getX(i);
               const y = pos.getY(i);
               const z = pos.getZ(i);
-              // Subtle central pinch crease along X=0
               const pinchIndent = 1 - 0.18 * Math.exp(-(x * x) / (r * r * 0.12));
               pos.setXYZ(i, x * 1.28, y * 0.82 * pinchIndent, z * 1.05);
             }
             geo.computeVertexNormals();
             mesh = new THREE.Mesh(geo, mat);
-            mesh.quaternion.setFromUnitVectors(Y, dirV);
+            mesh.quaternion.setFromUnitVectors(Y_AXIS, dirV);
             mesh.position.copy(tv(l.mid));
             break;
           }
           case "tulip": {
             const span = Math.max(r * 1.9, startV.distanceTo(endV));
-            const geo = createTulipLatexGeometry(r * 1.16, span);
-            mesh = new THREE.Mesh(geo, mat);
-            mesh.quaternion.setFromUnitVectors(Y, dirV);
+            mesh = new THREE.Mesh(createTulipLatexGeometry(r * 1.16, span), mat);
+            mesh.quaternion.setFromUnitVectors(Y_AXIS, dirV);
             mesh.position.copy(startV);
             break;
           }
@@ -826,14 +848,10 @@ export const ThreeBalloonViewer = forwardRef<
             const q1 = startV.clone().lerp(endV, 0.25).addScaledVector(radialV, 0.85);
             const qMid = startV.clone().lerp(endV, 0.5).addScaledVector(radialV, 1.05);
             const q3 = startV.clone().lerp(endV, 0.75).addScaledVector(radialV, 0.85);
-            const geo = new THREE.TubeGeometry(
-              new THREE.CatmullRomCurve3([startV, q1, qMid, q3, endV]),
-              32,
-              r * 0.92,
-              16,
-              false
+            mesh = new THREE.Mesh(
+              new THREE.TubeGeometry(new THREE.CatmullRomCurve3([startV, q1, qMid, q3, endV]), 32, r * 0.92, 16, false),
+              mat
             );
-            mesh = new THREE.Mesh(geo, mat);
             break;
           }
           case "spiral": {
@@ -848,23 +866,18 @@ export const ThreeBalloonViewer = forwardRef<
             const N = 52;
             for (let i = 0; i <= N; i++) {
               const t = i / N;
-              const env = Math.sin(Math.min(1, t * 5) * (Math.PI / 2)) * Math.sin(Math.min(1, (1 - t) * 5) * (Math.PI / 2));
+              const env =
+                Math.sin(Math.min(1, t * 5) * (Math.PI / 2)) * Math.sin(Math.min(1, (1 - t) * 5) * (Math.PI / 2));
               const a = t * turns * Math.PI * 2;
-              const c = startV
-                .clone()
-                .addScaledVector(axisNorm, spanLen * t)
-                .addScaledVector(sideV, Math.cos(a) * coilR * (0.25 + 0.75 * env))
-                .addScaledVector(upV, Math.sin(a) * coilR * (0.25 + 0.75 * env));
-              pts.push(c);
+              pts.push(
+                startV
+                  .clone()
+                  .addScaledVector(axisNorm, spanLen * t)
+                  .addScaledVector(sideV, Math.cos(a) * coilR * (0.25 + 0.75 * env))
+                  .addScaledVector(upV, Math.sin(a) * coilR * (0.25 + 0.75 * env))
+              );
             }
-            const geo = new THREE.TubeGeometry(
-              new THREE.CatmullRomCurve3(pts),
-              68,
-              r * 0.64,
-              14,
-              false
-            );
-            mesh = new THREE.Mesh(geo, mat);
+            mesh = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 68, r * 0.64, 14, false), mat);
             break;
           }
           case "bent": {
@@ -877,44 +890,33 @@ export const ThreeBalloonViewer = forwardRef<
                     startV.clone().addScaledVector(dirV, len * 0.7).addScaledVector(upV, -len * 0.26),
                     endV
                   )
-                : new THREE.QuadraticBezierCurve3(
-                    startV,
-                    tv(l.mid).addScaledVector(upV, len * 0.22),
-                    endV
-                  );
-            const geo = new THREE.TubeGeometry(curve, 30, r * 0.92, 18, false);
-            // Smooth end spheres so curved tube ends look rounded like real latex
-            const tipCap = new THREE.Mesh(new THREE.SphereGeometry(r * 0.92, 16, 12), mat);
-            tipCap.position.copy(endV);
-            modelGroup.add(tipCap);
-            mesh = new THREE.Mesh(geo, mat);
+                : new THREE.QuadraticBezierCurve3(startV, tv(l.mid).addScaledVector(upV, len * 0.22), endV);
+            if (extras) {
+              const tipCap = new THREE.Mesh(new THREE.SphereGeometry(r * 0.92, 16, 12), mat);
+              tipCap.position.copy(endV);
+              extras.add(tipCap);
+            }
+            mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, r * 0.92, 18, false), mat);
             break;
           }
           case "bead": {
-            const geo = new THREE.SphereGeometry(r * 1.12, 24, 18);
-            mesh = new THREE.Mesh(geo, mat);
+            mesh = new THREE.Mesh(new THREE.SphereGeometry(r * 1.12, 24, 18), mat);
             mesh.position.copy(tv(l.mid));
             break;
           }
           default: {
             if (l.bowOut) {
-              const flk = tv(l.bowOut);
-              const qMid = startV.clone().lerp(endV, 0.5).add(flk);
-              const geo = new THREE.TubeGeometry(
-                new THREE.CatmullRomCurve3([startV, qMid, endV]),
-                28,
-                r * 0.9,
-                16,
-                false
+              const qMid = startV.clone().lerp(endV, 0.5).add(tv(l.bowOut));
+              mesh = new THREE.Mesh(
+                new THREE.TubeGeometry(new THREE.CatmullRomCurve3([startV, qMid, endV]), 28, r * 0.9, 16, false),
+                mat
               );
-              mesh = new THREE.Mesh(geo, mat);
             } else {
               const segVec = endV.clone().sub(startV);
               const segLen = Math.max(0.22, segVec.length());
               const segDir = segVec.length() > 1e-4 ? segVec.normalize() : dirV;
-              const geo = createSmoothLatexSausageGeometry(r, segLen);
-              mesh = new THREE.Mesh(geo, mat);
-              mesh.quaternion.setFromUnitVectors(Y, segDir);
+              mesh = new THREE.Mesh(createSmoothLatexSausageGeometry(r, segLen), mat);
+              mesh.quaternion.setFromUnitVectors(Y_AXIS, segDir);
               mesh.position.copy(startV);
             }
           }
@@ -922,54 +924,85 @@ export const ThreeBalloonViewer = forwardRef<
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         return mesh;
+      },
+      []
+    );
+
+    /* ---------------- heavy pass: latex model, untwisted remainder, shrinking tails ---------------- */
+    useEffect(() => {
+      const pivot = pivotRef.current;
+      const modelGroup = modelGroupRef.current;
+      const ghostGroup = ghostGroupRef.current;
+      if (!pivot || !modelGroup || !ghostGroup) return;
+
+      clearGroup(modelGroup);
+      clearGroup(ghostGroup);
+      pickMeshesRef.current = [];
+      bubbleMeshesRef.current = new Map();
+      activeMatsRef.current = [];
+      dangerRingsRef.current = [];
+
+      const { layouts, chains, stability } = layoutSnapshot;
+
+      const specialMat = (hex: string, opts: { active?: boolean; unraveled?: boolean }) => {
+        if (opts.unraveled) {
+          return new THREE.MeshPhysicalMaterial({
+            color: new THREE.Color(hex).lerp(new THREE.Color(DANGER_COLOR), 0.35),
+            emissive: new THREE.Color(DANGER_COLOR),
+            emissiveIntensity: 0.25,
+            roughness: 0.22,
+            clearcoat: 0.95,
+            clearcoatRoughness: 0.1,
+            wireframe,
+          });
+        }
+        const m = new THREE.MeshPhysicalMaterial({
+          color: new THREE.Color(hex).lerp(new THREE.Color(HIGHLIGHT), 0.35),
+          emissive: new THREE.Color(HIGHLIGHT),
+          emissiveIntensity: 0.42,
+          roughness: 0.16,
+          metalness: 0.02,
+          clearcoat: 1.0,
+          clearcoatRoughness: 0.07,
+          sheen: 0.35,
+          wireframe,
+        });
+        activeMatsRef.current.push(m);
+        return m;
       };
 
-      /* ----- formed bubbles + smooth U-crease lock elbows ----- */
+      const registerBubbleMesh = (idx: number, mesh: THREE.Mesh) => {
+        mesh.userData.bubbleIndex = idx;
+        modelGroup.add(mesh);
+        pickMeshesRef.current.push(mesh);
+        const arr = bubbleMeshesRef.current.get(idx) ?? [];
+        arr.push(mesh);
+        bubbleMeshesRef.current.set(idx, arr);
+      };
+
+      /* formed bubbles + lock-pair fold elbows */
       layouts.forEach((l) => {
         if (!vis.formed.has(l.index)) return;
         const isActive = vis.active.has(l.index);
-        const isDropHover = dropPreview?.bubbleIndex === l.index;
-        const mat = latexMat(l.bubble.color, {
-          active: isActive,
-          dropTarget: isDropHover,
-          unraveled: l.unraveledInRelease,
-        });
-        const mesh = buildMesh(l, mat);
-        mesh.userData.bubbleIndex = l.index;
-        modelGroup.add(mesh);
-        pickMeshesRef.current.push(mesh);
+        const mat =
+          isActive || l.unraveledInRelease
+            ? specialMat(l.bubble.color, { active: isActive, unraveled: l.unraveledInRelease })
+            : baseLatexMat(l.bubble.color);
+        registerBubbleMesh(l.index, buildMesh(l, mat, modelGroup));
 
-        // If this bubble opens a 2-bubble Lock Pair and its partner is also formed,
-        // connect the two parallel tubes smoothly across their 180° fold tip!
-        if (
-          l.foldBridgeTo &&
-          l.partnerIndex !== undefined &&
-          vis.formed.has(l.partnerIndex)
-        ) {
+        if (l.foldBridgeTo && l.partnerIndex !== undefined && vis.formed.has(l.partnerIndex)) {
           const pA = tv(l.end);
           const pB = tv(l.foldBridgeTo);
-          const apex = pA
-            .clone()
-            .lerp(pB, 0.5)
-            .addScaledVector(tv(l.dir), l.radiusUnits * 0.62);
-          const bridgeGeo = new THREE.TubeGeometry(
-            new THREE.CatmullRomCurve3([pA, apex, pB]),
-            16,
-            l.radiusUnits * 0.82,
-            14,
-            false
+          const apex = pA.clone().lerp(pB, 0.5).addScaledVector(tv(l.dir), l.radiusUnits * 0.62);
+          const bridgeMesh = new THREE.Mesh(
+            new THREE.TubeGeometry(new THREE.CatmullRomCurve3([pA, apex, pB]), 16, l.radiusUnits * 0.82, 14, false),
+            mat
           );
-          const bridgeMesh = new THREE.Mesh(bridgeGeo, mat);
-          bridgeMesh.userData.bubbleIndex = l.index;
-          modelGroup.add(bridgeMesh);
-          pickMeshesRef.current.push(bridgeMesh);
+          registerBubbleMesh(l.index, bridgeMesh);
         }
       });
 
-      /* ----- tiered next-step ghost forecast -----
-         Only the next three construction steps are previewed. The immediate next
-         step is strongest; farther steps fade rapidly instead of showing the whole
-         finished sculpture at one uniform opacity. */
+      /* tiered next-step ghost forecast */
       if (buildMode === "step" && showGhost && !releasedHands) {
         const bubbleStep = new Map<number, number>();
         steps.forEach((step, stepIndex) => {
@@ -987,16 +1020,18 @@ export const ThreeBalloonViewer = forwardRef<
           ghostGroup.add(
             buildMesh(
               layout,
-              latexMat(layout.bubble.color, {
-                ghost: true,
-                ghostOpacity: tierOpacity[distance],
+              new THREE.MeshBasicMaterial({
+                color: new THREE.Color(layout.bubble.color),
+                transparent: true,
+                opacity: tierOpacity[distance],
+                depthWrite: false,
               })
             )
           );
         });
       }
 
-      /* ----- pulsing crimson rings on any unstable seams ----- */
+      /* pulsing rings on unstable seams */
       stability.issues.forEach((issue) => {
         if (issue.severity !== "will_untwist" || !issue.jointPosition) return;
         const ring = new THREE.Mesh(
@@ -1008,239 +1043,101 @@ export const ThreeBalloonViewer = forwardRef<
         dangerRingsRef.current.push(ring);
       });
 
-      /* ----- 3D interactive handles on selected bubble (always visible) ----- */
-      if (
-        selectedBubbleIndex !== null &&
-        selectedBubbleIndex !== undefined &&
-        !releasedHands
-      ) {
-        const l = layoutByIndex.get(selectedBubbleIndex);
-        if (l) {
-          // Cyan selection halo
-          const halo = new THREE.Mesh(
-            new THREE.TorusGeometry(l.radiusUnits * 1.38 + 0.1, 0.042, 10, 36),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color(SELECT_COLOR) })
-          );
-          halo.position.copy(tv(l.mid));
-          halo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tv(l.dir));
-          gizmoGroup.add(halo);
+      /* nozzle knots, untwisted remainder and the shrinking uninflated tail */
+      const tailMat = (color: string, ghost = false) =>
+        ghost
+          ? new THREE.MeshBasicMaterial({ color: new THREE.Color(color), transparent: true, opacity: 0.16, depthWrite: false })
+          : new THREE.MeshPhysicalMaterial({ color: new THREE.Color(color), roughness: 0.38, clearcoat: 0.4 });
 
-          // 1. LENGTH STRETCH GIZMO (Cyan glowing handle at bubble's far end/apex)
-          const lenHandlePos = tv(l.end).clone().addScaledVector(tv(l.dir), 0.28);
-          const lenHandle = new THREE.Mesh(
-            new THREE.SphereGeometry(0.24, 18, 14),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#22D3EE") })
-          );
-          lenHandle.position.copy(lenHandlePos);
-          lenHandle.userData = { gizmoKind: "length", bubbleIndex: l.index };
-          gizmoGroup.add(lenHandle);
-          gizmoMeshesRef.current.push(lenHandle);
-
-          const coneOut = new THREE.Mesh(
-            new THREE.ConeGeometry(0.14, 0.3, 14),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#22D3EE") })
-          );
-          coneOut.position.copy(lenHandlePos).addScaledVector(tv(l.dir), 0.3);
-          coneOut.quaternion.setFromUnitVectors(Y, tv(l.dir));
-          coneOut.userData = { gizmoKind: "length", bubbleIndex: l.index };
-          gizmoGroup.add(coneOut);
-          gizmoMeshesRef.current.push(coneOut);
-
-          // 2. DIAMETER SQUEEZE GIZMO (Magenta sphere on bubble equator)
-          const diamHandle = new THREE.Mesh(
-            new THREE.SphereGeometry(0.19, 16, 12),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#F472B6") })
-          );
-          diamHandle.position
-            .copy(tv(l.mid))
-            .addScaledVector(tv(l.side), l.radiusUnits + 0.28);
-          diamHandle.userData = { gizmoKind: "diameter", bubbleIndex: l.index };
-          gizmoGroup.add(diamHandle);
-          gizmoMeshesRef.current.push(diamHandle);
-
-          // 3. BEND / TURN AIM GIZMO (Amber sphere above bubble midpoint)
-          const bendHandle = new THREE.Mesh(
-            new THREE.OctahedronGeometry(0.22, 0),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#FACC15") })
-          );
-          bendHandle.position
-            .copy(tv(l.mid))
-            .addScaledVector(tv(l.up), l.radiusUnits + 0.36);
-          bendHandle.userData = { gizmoKind: "bend", bubbleIndex: l.index };
-          gizmoGroup.add(bendHandle);
-          gizmoMeshesRef.current.push(bendHandle);
-
-          // 4. IN-SCENE '+' JOINT HANDLE (Emerald sphere at chainEnd to add next bubble right in 3D!)
-          const addPos = tv(l.chainEnd)
-            .clone()
-            .addScaledVector(tv(l.chainDir), 0.32)
-            .add(new THREE.Vector3(0, -0.32, 0));
-          const addSphere = new THREE.Mesh(
-            new THREE.SphereGeometry(0.2, 16, 12),
-            new THREE.MeshBasicMaterial({ color: new THREE.Color("#10B981") })
-          );
-          addSphere.position.copy(addPos);
-          addSphere.userData = { gizmoKind: "add_after", bubbleIndex: l.index };
-          gizmoGroup.add(addSphere);
-          gizmoMeshesRef.current.push(addSphere);
-        }
-      }
-
-      /* ----- nozzle knots, trailing un-twisted balloon tubes & uninflated tails ----- */
-      const droopingTail = (
-        from: THREE.Vector3,
-        dirV: THREE.Vector3,
-        tailInches: number,
-        color: string
-      ) => {
-        const tl = THREE.MathUtils.clamp(tailInches * UNIT * 0.42, 0.45, 2.2);
+      const droopingTail = (from: THREE.Vector3, dirV: THREE.Vector3, tailInches: number, color: string, ghost = false) => {
+        if (tailInches <= 0.05) return;
+        const tl = THREE.MathUtils.clamp(tailInches * UNIT * 0.5, 0.12, 4.5);
         const pts = [
           from.clone(),
-          from
-            .clone()
-            .addScaledVector(dirV, tl * 0.45)
-            .add(new THREE.Vector3(0, -tl * 0.16, 0)),
-          from
-            .clone()
-            .addScaledVector(dirV, tl * 0.78)
-            .add(new THREE.Vector3(0.1, -tl * 0.5, 0.05)),
+          from.clone().addScaledVector(dirV, tl * 0.45).add(new THREE.Vector3(0, -tl * 0.16, 0)),
+          from.clone().addScaledVector(dirV, tl * 0.78).add(new THREE.Vector3(0.1, -tl * 0.5, 0.05)),
         ];
         const tube = new THREE.Mesh(
           new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 18, 0.075, 10, false),
-          new THREE.MeshPhysicalMaterial({
-            color: new THREE.Color(color),
-            roughness: 0.38,
-            clearcoat: 0.4,
-          })
+          tailMat(color, ghost)
         );
         modelGroup.add(tube);
       };
 
+      const boundsPts: THREE.Vector3[] = [];
+
       balloons.forEach((bal) => {
         const chain = chains.get(bal.id);
+        if (!chain || !vis.introducedBalloons.has(bal.id)) return;
         const bLayouts = layouts.filter((l) => l.bubble.balloonId === bal.id);
-        if (bLayouts.length === 0) return;
-        if (!vis.introducedBalloons.has(bal.id)) return;
+        const air = airByBalloon.get(bal.id);
+        const r = chain.radiusUnits;
+        const firstDir = bLayouts[0] ? tv(bLayouts[0].dir) : tv(chain.startDir);
 
-        // Tied nozzle lip & bead
-        const knotPos = chain ? tv(chain.startPos) : tv(bLayouts[0].start);
-        const knot = new THREE.Mesh(
-          new THREE.TorusGeometry((chain?.radiusUnits ?? 0.55) * 0.36, 0.095, 10, 20),
-          latexMat(bal.color)
-        );
+        // tied nozzle knot
+        const knotPos = tv(chain.startPos);
+        const knot = new THREE.Mesh(new THREE.TorusGeometry(r * 0.36, 0.095, 10, 20), baseLatexMat(bal.color));
         knot.position.copy(knotPos);
-        knot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tv(bLayouts[0].dir));
+        knot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), firstDir);
         modelGroup.add(knot);
 
         const formedL = bLayouts.filter((l) => vis.formed.has(l.index));
-        const unformedL = bLayouts.filter((l) => !vis.formed.has(l.index));
+        const lastFormed = formedL[formedL.length - 1];
+        const lastLayout = bLayouts[bLayouts.length - 1];
+        const tiedOff =
+          lastLayout &&
+          formedL.length === bLayouts.length &&
+          (lastLayout.bubble.twistType === "cut_tail" ||
+            lastLayout.bubble.twistType === "cut_tail_bubbles" ||
+            lastLayout.bubble.lockToBubbleStart !== undefined);
 
-        if (buildMode === "step" && !releasedHands && unformedL.length > 0) {
-          const lastFormed = formedL[formedL.length - 1];
-          const origin = lastFormed ? tv(lastFormed.chainEnd) : tv(bLayouts[0].start);
-          const dirR = lastFormed ? tv(lastFormed.chainDir) : tv(bLayouts[0].dir);
-          const rawRemainingUnits =
-            unformedL.reduce((s, l) => s + (l.bubble.lengthInches || 0), 0) * UNIT;
-          const totalLen = Math.min(9.5, Math.max(1.2, rawRemainingUnits));
-          const r = chain?.radiusUnits ?? 0.55;
+        const origin = lastFormed ? tv(lastFormed.chainEnd) : knotPos.clone();
+        const dirR = lastFormed ? tv(lastFormed.chainDir) : firstDir.clone();
+        const untwistedInches = air?.untwistedInches ?? 0;
+        let tailFrom = origin.clone();
+
+        if (!tiedOff && untwistedInches > 0.2) {
+          // inflated but still untwisted balloon; visually capped so a long leftover
+          // reads as "unused balloon" without dwarfing the sculpture
+          const totalLen = Math.min(9.5, Math.max(0.6, untwistedInches * UNIT));
           const p0 = origin.clone();
           const p1 = origin.clone().addScaledVector(dirR, totalLen * 0.5);
-          const p2 = p1
-            .clone()
-            .addScaledVector(dirR, totalLen * 0.28)
-            .add(new THREE.Vector3(0, -totalLen * 0.08, 0));
-          const p3 = p2
-            .clone()
-            .addScaledVector(dirR, totalLen * 0.14)
-            .add(new THREE.Vector3(0, -totalLen * 0.14, 0));
+          const p2 = p1.clone().addScaledVector(dirR, totalLen * 0.28).add(new THREE.Vector3(0, -totalLen * 0.08, 0));
+          const p3 = p2.clone().addScaledVector(dirR, totalLen * 0.14).add(new THREE.Vector3(0, -totalLen * 0.14, 0));
           const remMesh = new THREE.Mesh(
-            new THREE.TubeGeometry(
-              new THREE.CatmullRomCurve3([p0, p1, p2, p3]),
-              32,
-              r * 0.92,
-              16,
-              false
-            ),
-            latexMat(bal.color)
+            new THREE.TubeGeometry(new THREE.CatmullRomCurve3([p0, p1, p2, p3]), 32, r * 0.92, 16, false),
+            baseLatexMat(bal.color)
           );
           remMesh.castShadow = true;
+          remMesh.userData.untwistedBalloonId = bal.id;
           modelGroup.add(remMesh);
-          const cap = new THREE.Mesh(
-            new THREE.SphereGeometry(r * 0.92, 16, 12),
-            latexMat(bal.color)
-          );
+          const cap = new THREE.Mesh(new THREE.SphereGeometry(r * 0.92, 16, 12), baseLatexMat(bal.color));
           cap.position.copy(p3);
           modelGroup.add(cap);
-          droopingTail(p3, dirR, bal.tailLengthInches ?? 8, bal.color);
-        } else {
-          const last = bLayouts[bLayouts.length - 1];
-          if (
-            last &&
-            last.bubble.twistType !== "cut_tail" &&
-            last.bubble.twistType !== "cut_tail_bubbles" &&
-            last.bubble.lockToBubbleStart === undefined
-          ) {
-            droopingTail(
-              tv(last.end),
-              tv(last.dir),
-              bal.tailLengthInches ?? 8,
-              bal.color
-            );
+          tailFrom = p3;
+          boundsPts.push(p0, p3);
+        } else if (!tiedOff && lastFormed) {
+          tailFrom = tv(lastFormed.end);
+        }
+
+        if (!tiedOff && air) {
+          // ghost of the tail you started with, then the tail that is actually left
+          if (buildMode === "step" && air.twistShiftInches > 0.2) {
+            droopingTail(tailFrom, dirR, air.initialTailInches, bal.color, true);
           }
+          droopingTail(tailFrom, dirR, air.tailRemainingInches, bal.color);
+          boundsPts.push(tailFrom);
         }
       });
 
-      /* ----- numbered bubble callout badges ----- */
-      if (showLabels) {
-        layouts.forEach((l) => {
-          if (!vis.formed.has(l.index)) return;
-          const isActive = vis.active.has(l.index);
-          const isSelected = selectedBubbleIndex === l.index;
-          const isDanger = l.endSeamWillUntwist;
-          const canvas = document.createElement("canvas");
-          canvas.width = 128;
-          canvas.height = 128;
-          const ctx = canvas.getContext("2d");
-          if (ctx) {
-            ctx.beginPath();
-            ctx.arc(64, 64, 50, 0, Math.PI * 2);
-            ctx.fillStyle = isDanger
-              ? DANGER_COLOR
-              : isSelected
-              ? SELECT_COLOR
-              : isActive
-              ? HIGHLIGHT
-              : "rgba(15,23,42,0.88)";
-            ctx.fill();
-            ctx.lineWidth = 6;
-            ctx.strokeStyle = isSelected || isActive ? "#0f172a" : "rgba(255,255,255,0.75)";
-            ctx.stroke();
-            ctx.fillStyle = isSelected || isActive ? "#0f172a" : "#ffffff";
-            ctx.font = "bold 50px system-ui, sans-serif";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(String(l.index + 1), 64, 67);
-          }
-          const tex = new THREE.CanvasTexture(canvas);
-          const sprite = new THREE.Sprite(
-            new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
-          );
-          sprite.renderOrder = 25;
-          sprite.scale.set(0.76, 0.76, 1);
-          sprite.position
-            .copy(tv(l.mid))
-            .addScaledVector(tv(l.up), l.radiusUnits + 0.44);
-          labelGroup.add(sprite);
-        });
-      }
-
-      /* ----- center sculpture & auto-fit camera when design changes ----- */
+      /* center sculpture & auto-fit camera when the design changes */
       const finalBox = new THREE.Box3();
       layouts.forEach((l) => {
         finalBox.expandByPoint(tv(l.start));
         finalBox.expandByPoint(tv(l.end));
         finalBox.expandByPoint(tv(l.mid));
       });
+      boundsPts.forEach((p) => finalBox.expandByPoint(p));
       if (!finalBox.isEmpty()) {
         finalBox.expandByScalar(0.8);
         const center = new THREE.Vector3();
@@ -1253,32 +1150,204 @@ export const ThreeBalloonViewer = forwardRef<
         if (gridRef.current) {
           gridRef.current.position.y = finalBox.min.y - center.y - 0.35;
         }
-        const fitKey =
-          bubbles[0]?.id +
-          ":" +
-          balloons.map((b) => b.id).join("|");
+        const fitKey = (bubbles[0]?.id ?? "empty") + ":" + balloons.map((b) => b.id).join("|");
         if (fitKey !== lastFitKeyRef.current) {
           lastFitKeyRef.current = fitKey;
           fitCameraTo(sphere, false);
         }
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
       layoutSnapshot,
+      vis,
+      airByBalloon,
       balloons,
       bubbles,
       steps,
       currentStepIndex,
       buildMode,
-      selectedBubbleIndex,
-      showLabels,
       showGhost,
       wireframe,
       releasedHands,
-      dropPreview,
+      baseLatexMat,
+      buildMesh,
+      fitCameraTo,
     ]);
 
-    /* ---------------- HTML5 Drag-and-Drop Twist onto 3D Canvas ---------------- */
+    /* ---------------- light pass: selection halos, handles, number badges ---------------- */
+    useEffect(() => {
+      const gizmoGroup = gizmoGroupRef.current;
+      const labelGroup = labelGroupRef.current;
+      if (!gizmoGroup || !labelGroup) return;
+      clearGroup(gizmoGroup);
+      clearGroup(labelGroup);
+      gizmoMeshesRef.current = [];
+
+      const { layouts } = layoutSnapshot;
+      const layoutByIndex = new Map(layouts.map((l) => [l.index, l]));
+      const primary = selectedBubbleIndex ?? null;
+
+      if (!releasedHands) {
+        // halos on every selected bubble
+        multiSelection.forEach((idx) => {
+          const l = layoutByIndex.get(idx);
+          if (!l || !vis.formed.has(idx)) return;
+          const isPrimary = idx === primary;
+          const halo = new THREE.Mesh(
+            new THREE.TorusGeometry(l.radiusUnits * 1.38 + 0.1, isPrimary ? 0.042 : 0.03, 10, 36),
+            new THREE.MeshBasicMaterial({ color: new THREE.Color(isPrimary ? SELECT_COLOR : MULTI_COLOR) })
+          );
+          halo.position.copy(tv(l.mid));
+          halo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tv(l.dir));
+          gizmoGroup.add(halo);
+        });
+
+        // handles on the primary bubble
+        const l = primary !== null ? layoutByIndex.get(primary) : undefined;
+        if (l && vis.formed.has(l.index) && !splitMode) {
+          const lenHandlePos = tv(l.end).clone().addScaledVector(tv(l.dir), 0.28);
+          const lenHandle = new THREE.Mesh(
+            new THREE.SphereGeometry(0.24, 18, 14),
+            new THREE.MeshBasicMaterial({ color: new THREE.Color(SELECT_COLOR) })
+          );
+          lenHandle.position.copy(lenHandlePos);
+          lenHandle.userData = { gizmoKind: "length", bubbleIndex: l.index };
+          gizmoGroup.add(lenHandle);
+          gizmoMeshesRef.current.push(lenHandle);
+
+          const coneOut = new THREE.Mesh(
+            new THREE.ConeGeometry(0.14, 0.3, 14),
+            new THREE.MeshBasicMaterial({ color: new THREE.Color(SELECT_COLOR) })
+          );
+          coneOut.position.copy(lenHandlePos).addScaledVector(tv(l.dir), 0.3);
+          coneOut.quaternion.setFromUnitVectors(Y_AXIS, tv(l.dir));
+          coneOut.userData = { gizmoKind: "length", bubbleIndex: l.index };
+          gizmoGroup.add(coneOut);
+          gizmoMeshesRef.current.push(coneOut);
+
+          const diamHandle = new THREE.Mesh(
+            new THREE.SphereGeometry(0.19, 16, 12),
+            new THREE.MeshBasicMaterial({ color: new THREE.Color("#F472B6") })
+          );
+          diamHandle.position.copy(tv(l.mid)).addScaledVector(tv(l.side), l.radiusUnits + 0.28);
+          diamHandle.userData = { gizmoKind: "diameter", bubbleIndex: l.index };
+          gizmoGroup.add(diamHandle);
+          gizmoMeshesRef.current.push(diamHandle);
+
+          const bendHandle = new THREE.Mesh(
+            new THREE.OctahedronGeometry(0.22, 0),
+            new THREE.MeshBasicMaterial({ color: new THREE.Color(HIGHLIGHT) })
+          );
+          bendHandle.position.copy(tv(l.mid)).addScaledVector(tv(l.up), l.radiusUnits + 0.36);
+          bendHandle.userData = { gizmoKind: "bend", bubbleIndex: l.index };
+          gizmoGroup.add(bendHandle);
+          gizmoMeshesRef.current.push(bendHandle);
+
+          const addPos = tv(l.chainEnd).clone().addScaledVector(tv(l.chainDir), 0.32).add(new THREE.Vector3(0, -0.32, 0));
+          const addSphere = new THREE.Mesh(
+            new THREE.SphereGeometry(0.2, 16, 12),
+            new THREE.MeshBasicMaterial({ color: new THREE.Color("#10B981") })
+          );
+          addSphere.position.copy(addPos);
+          addSphere.userData = { gizmoKind: "add_after", bubbleIndex: l.index };
+          gizmoGroup.add(addSphere);
+          gizmoMeshesRef.current.push(addSphere);
+        }
+      }
+
+      /* numbered badges (textures cached by number + state) */
+      if (showLabels) {
+        const cache = labelTexCacheRef.current;
+        const texFor = (n: number, state: "danger" | "selected" | "active" | "plain") => {
+          const key = `${n}|${state}`;
+          let tex = cache.get(key);
+          if (tex) return tex;
+          const canvas = document.createElement("canvas");
+          canvas.width = 128;
+          canvas.height = 128;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.beginPath();
+            ctx.arc(64, 64, 50, 0, Math.PI * 2);
+            ctx.fillStyle =
+              state === "danger"
+                ? DANGER_COLOR
+                : state === "selected"
+                ? SELECT_COLOR
+                : state === "active"
+                ? HIGHLIGHT
+                : "rgba(15,23,42,0.88)";
+            ctx.fill();
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = state === "selected" || state === "active" ? "#0f172a" : "rgba(255,255,255,0.75)";
+            ctx.stroke();
+            ctx.fillStyle = state === "selected" || state === "active" ? "#0f172a" : "#ffffff";
+            ctx.font = "bold 50px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(String(n), 64, 67);
+          }
+          tex = new THREE.CanvasTexture(canvas);
+          tex.userData.shared = true;
+          cache.set(key, tex);
+          return tex;
+        };
+
+        layouts.forEach((l) => {
+          if (!vis.formed.has(l.index)) return;
+          const state = l.endSeamWillUntwist
+            ? "danger"
+            : multiSelection.includes(l.index)
+            ? "selected"
+            : vis.active.has(l.index)
+            ? "active"
+            : "plain";
+          const sprite = new THREE.Sprite(
+            new THREE.SpriteMaterial({ map: texFor(l.index + 1, state), depthTest: false, transparent: true })
+          );
+          sprite.renderOrder = 25;
+          sprite.scale.set(0.76, 0.76, 1);
+          sprite.position.copy(tv(l.mid)).addScaledVector(tv(l.up), l.radiusUnits + 0.44);
+          labelGroup.add(sprite);
+        });
+      }
+    }, [layoutSnapshot, vis, multiSelection, selectedBubbleIndex, showLabels, releasedHands, splitMode]);
+
+    /* Escape leaves split mode */
+    useEffect(() => {
+      if (!splitMode) return;
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === "Escape") setSplitMode(false);
+      };
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }, [splitMode]);
+
+    /* ---------------- drop-target highlight without a rebuild ---------------- */
+    useEffect(() => {
+      const idx = dropPreview?.bubbleIndex ?? null;
+      if (idx === null) return;
+      const meshes = bubbleMeshesRef.current.get(idx);
+      if (!meshes) return;
+      const hl = new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color("#10B981"),
+        emissive: new THREE.Color("#10B981"),
+        emissiveIntensity: 0.55,
+        roughness: 0.16,
+        clearcoat: 1.0,
+      });
+      const originals = meshes.map((m) => m.material);
+      meshes.forEach((m) => {
+        m.material = hl;
+      });
+      return () => {
+        meshes.forEach((m, i) => {
+          m.material = originals[i];
+        });
+        hl.dispose();
+      };
+    }, [dropPreview?.bubbleIndex]);
+
+    /* ---------------- HTML5 drag-and-drop twist onto 3D canvas ---------------- */
     const hitBubbleAtClientPos = (clientX: number, clientY: number): number | null => {
       const renderer = rendererRef.current;
       const camera = cameraRef.current;
@@ -1296,18 +1365,15 @@ export const ThreeBalloonViewer = forwardRef<
     };
 
     const handleCanvasDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-      const preset = e.dataTransfer.types.includes("application/x-balloon-twist")
-        ? (dropPreview?.preset ?? "basic")
-        : null;
-      if (!preset) return;
+      if (!e.dataTransfer.types.includes("application/x-balloon-twist")) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
       const hitIdx = hitBubbleAtClientPos(e.clientX, e.clientY);
-      setDropPreview((prev) => ({
-        preset: prev?.preset ?? "basic",
-        bubbleIndex: hitIdx,
-        convertMode: e.altKey,
-      }));
+      setDropPreview((prev) =>
+        prev && prev.bubbleIndex === hitIdx && prev.convertMode === e.altKey
+          ? prev
+          : { preset: prev?.preset ?? "basic", bubbleIndex: hitIdx, convertMode: e.altKey }
+      );
     };
 
     const handleCanvasDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -1319,90 +1385,82 @@ export const ThreeBalloonViewer = forwardRef<
       if (hitIdx !== null && e.altKey) {
         const entry = ADD_TWIST_PALETTE.find((p) => p.kind === raw);
         if (entry) {
-          onUpdateBubble?.(hitIdx, {
-            twistType: entry.convertTwist,
-            isLoop: entry.convertTwist === "loop",
-            isPinch: entry.convertTwist === "pinch" || entry.convertTwist === "toe",
-            isTulip: entry.convertTwist === "tulip",
-          });
+          onUpdateBubble?.(hitIdx, { twistType: entry.convertTwist, ...twistFlags(entry.convertTwist) });
           onSelectBubble?.(hitIdx);
         }
         return;
       }
-      onAddTwistPreset?.(raw, hitIdx ?? bubbles.length - 1);
+      onAddTwistPreset?.(raw, hitIdx ?? undefined, hitIdx === null ? activeBalloonId ?? undefined : undefined);
     };
 
-    const safeIdx = Math.max(0, Math.min(selectedBubbleIndex ?? 0, bubbles.length - 1));
-    const selBubble = bubbles[safeIdx];
-    const selLayout = layoutSnapshot.layouts[safeIdx];
-    const selBalloon = balloons.find((x) => x.id === selBubble?.balloonId);
+    /* ---------------- derived UI state ---------------- */
+    const hasBubbles = bubbles.length > 0;
+    const safeIdx = hasBubbles ? Math.max(0, Math.min(selectedBubbleIndex ?? 0, bubbles.length - 1)) : -1;
+    const selBubble = hasBubbles ? bubbles[safeIdx] : undefined;
+    const selLayout = hasBubbles ? layoutSnapshot.layouts[safeIdx] : undefined;
+    const selBalloon =
+      balloons.find((x) => x.id === selBubble?.balloonId) ??
+      balloons.find((x) => x.id === activeBalloonId) ??
+      balloons[0];
     const { stability } = layoutSnapshot;
-    const visNow =
-      buildMode === "step" && !releasedHands
-        ? getStepVisibility(steps, bubbles, balloons, currentStepIndex)
-        : null;
-    const formedCount = visNow ? visNow.formed.size : bubbles.length;
-    const firstUntwistIssue = stability.issues.find((i) => i.severity === "will_untwist") || stability.issues[0];
+    const formedCount = vis.formed.size;
+    const firstUntwistIssue =
+      stability.issues.find((i) => i.severity === "will_untwist") || stability.issues[0];
+    const multi = multiSelection.length > 1;
+    const sortedSel = [...multiSelection].sort((a, b) => a - b);
+    const adjacentSel = sortedSel.every((v, k) => k === 0 || v === sortedSel[k - 1] + 1);
+    const twistTogetherLabel = !multi
+      ? ""
+      : adjacentSel
+      ? sortedSel.length === 2
+        ? "Twist together as lock pair"
+        : `Roll ${sortedSel.length} through (bird body)`
+      : `Lock #${sortedSel[sortedSel.length - 1] + 1} back into #${sortedSel[0] + 1}`;
+
+    const iconBtn = (active: boolean) =>
+      `btn btn-icon ${active ? "btn-active" : "btn-ghost"}`;
 
     return (
       <div
-        className={`relative rounded-2xl overflow-hidden shadow-2xl bg-slate-950 border border-slate-800 select-none ${className}`}
+        className={`relative select-none overflow-hidden bg-[#0a0f1c] ${className}`}
         onDragOver={handleCanvasDragOver}
         onDragLeave={() => setDropPreview((p) => (p ? { ...p, bubbleIndex: null } : null))}
         onDrop={handleCanvasDrop}
       >
-        {/* WebGL Smooth Latex Viewport */}
-        <div
-          ref={containerRef}
-          style={{ cursor: cursorStyle }}
-          className="w-full h-full min-h-[540px]"
-        />
+        <div ref={containerRef} style={{ cursor: cursorStyle }} className="h-full min-h-[540px] w-full" />
 
-        {/* Live Drag Handle Callout Toast */}
-        {dragReadout && (
-          <div className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-slate-950/95 border border-cyan-400 text-cyan-200 px-3.5 py-1.5 rounded-full text-xs font-mono font-bold shadow-2xl">
-            {dragReadout}
+        {/* transient readouts */}
+        {(dragReadout || dropPreview || splitMode) && (
+          <div className="hud pointer-events-none absolute left-[170px] top-14 z-30 max-w-[400px] px-3.5 py-1.5 font-mono text-xs text-cyan-100">
+            {dragReadout
+              ? dragReadout
+              : dropPreview
+              ? dropPreview.bubbleIndex !== null
+                ? dropPreview.convertMode
+                  ? `Convert #${dropPreview.bubbleIndex + 1} to ${dropPreview.preset.replace(/_/g, " ")}`
+                  : `Insert ${dropPreview.preset.replace(/_/g, " ")} after #${dropPreview.bubbleIndex + 1} (hold Alt to convert)`
+                : `Drop to add ${dropPreview.preset.replace(/_/g, " ")} at the end of the balloon`
+              : "Split mode: click a point on any bubble to put a twist there · Esc to exit"}
           </div>
         )}
 
-        {/* Live Drag-and-Drop Target Callout */}
-        {dropPreview && (
-          <div className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-emerald-950/95 border border-emerald-400 text-emerald-200 px-3.5 py-1.5 rounded-full text-xs font-bold shadow-2xl">
-            {dropPreview.bubbleIndex !== null
-              ? dropPreview.convertMode
-                ? `🔄 Drop to convert #${dropPreview.bubbleIndex + 1} (${bubbles[dropPreview.bubbleIndex]?.label}) → ${dropPreview.preset}`
-                : `➕ Drop to insert ${dropPreview.preset.replace("_", " ")} right after #${dropPreview.bubbleIndex + 1} (${bubbles[dropPreview.bubbleIndex]?.label}) · (Hold Alt to convert)`
-              : `➕ Drop to twist ${dropPreview.preset.replace("_", " ")} onto the balloon end`}
-          </div>
-        )}
-
-        {/* TOP BAR: Stability & Hands-Free Physics Tester + Camera Controls */}
-        <div className="absolute top-2.5 left-2.5 right-2.5 z-20 flex flex-wrap items-center justify-between gap-1.5 pointer-events-none">
-          {/* Stability Status + Let Go Physics Button + 1-Click Auto-Fix */}
-          <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 bg-slate-900/90 backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-slate-700/70 shadow-lg text-xs">
+        {/* top bar */}
+        <div className="pointer-events-none absolute left-2.5 right-2.5 top-2.5 z-20 flex flex-wrap items-start justify-between gap-1.5">
+          <div className="hud pointer-events-auto flex flex-wrap items-center gap-1.5 px-2 py-1.5">
             <button
               onClick={() => setReleasedHands((r) => !r)}
-              className={`px-2.5 py-1 rounded-lg font-bold transition flex items-center gap-1.5 ${
-                releasedHands
-                  ? "bg-rose-500 text-white shadow ring-2 ring-rose-300/60"
-                  : "bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30"
-              }`}
-              title="Simulate letting go of all twists with your hands — un-anchored twists unravel into straight tubes!"
+              className={`btn btn-xs ${releasedHands ? "btn-danger" : "btn-secondary"}`}
+              title="Simulate letting go: unanchored twists unravel into straight tubes"
             >
-              <span>{releasedHands ? "🖐️ Hands Released!" : "✊ Hold → 🖐️ Test Let Go"}</span>
+              <Hand className="h-3.5 w-3.5" />
+              {releasedHands ? "Hands released" : "Let go"}
             </button>
-
             {stability.isStable ? (
-              <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold">
-                ✅ Stable ({stability.lockedJoints}/{stability.totalJoints} joints locked)
-              </span>
+              <span className="chip chip-ok">Stable · {stability.lockedJoints}/{stability.totalJoints} locked</span>
             ) : (
-              <div className="flex items-center gap-1.5">
-                <span
-                  className="px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-bold animate-pulse"
-                  title={firstUntwistIssue?.whatHappensWhenReleased}
-                >
-                  ⚠️ {stability.untwistCount} Will Untwist!
+              <>
+                <span className="chip chip-danger" title={firstUntwistIssue?.whatHappensWhenReleased}>
+                  {stability.untwistCount} will untwist
                 </span>
                 {onAutoStabilizeAll && (
                   <button
@@ -1410,88 +1468,67 @@ export const ThreeBalloonViewer = forwardRef<
                       onAutoStabilizeAll();
                       setReleasedHands(false);
                     }}
-                    className="px-2 py-0.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] shadow transition"
-                    title={firstUntwistIssue ? `${firstUntwistIssue.title} — Click to automatically lock all unstable joints!` : "Auto-lock unstable joints"}
+                    className="btn btn-success btn-xs"
+                    title={firstUntwistIssue ? `${firstUntwistIssue.title} — auto-lock all unstable joints` : "Auto-lock"}
                   >
-                    🔧 Lock Now
+                    <Wrench className="h-3.5 w-3.5" /> Lock all
                   </button>
                 )}
-              </div>
+              </>
             )}
           </div>
 
-          {/* Right Camera & Overlay Controls */}
-          <div className="pointer-events-auto flex items-center gap-1 bg-slate-900/90 backdrop-blur-md px-2 py-1.5 rounded-xl border border-slate-700/70 text-[11px] text-slate-200 shadow-lg">
-            <button
-              onClick={() => setPaletteOpen((p) => !p)}
-              className={`px-2 py-0.5 rounded-md font-semibold transition ${
-                paletteOpen ? "bg-amber-500 text-slate-950" : "hover:bg-slate-800 text-slate-300"
-              }`}
-              title="Toggle Add-Twist Palette inside 3D Viewport"
-            >
-              🧰 Twists
+          <div className="hud pointer-events-auto flex items-center gap-0.5 px-1 py-1">
+            <button onClick={() => setPaletteOpen((p) => !p)} className={iconBtn(paletteOpen)} title="Twist palette">
+              <Boxes className="h-4 w-4" />
             </button>
+            {onSplitBubble && (
+              <button
+                onClick={() => setSplitMode((s) => !s)}
+                className={iconBtn(splitMode)}
+                title="Split mode: click on a bubble where you want a new twist"
+                disabled={!hasBubbles}
+              >
+                <Scissors className="h-4 w-4" />
+              </button>
+            )}
             <button
               onClick={() => {
                 const next = !isAutoRotating;
                 setIsAutoRotating(next);
                 if (controlsRef.current) controlsRef.current.autoRotate = next;
               }}
-              className={`px-2 py-0.5 rounded-md transition ${
-                isAutoRotating ? "bg-amber-500 text-slate-950 font-bold" : "hover:bg-slate-800"
-              }`}
-              title="Auto-spin turntable"
+              className={iconBtn(isAutoRotating)}
+              title="Turntable spin"
             >
-              🔄 Spin
+              <RotateCw className="h-4 w-4" />
             </button>
-            <button
-              onClick={() => fitCameraTo(finalSphereRef.current, true)}
-              className="px-2 py-0.5 rounded-md hover:bg-slate-800 transition"
-              title="Fit camera to sculpture"
-            >
-              🎯 Fit
+            <button onClick={() => fitCameraTo(finalSphereRef.current, true)} className={iconBtn(false)} title="Fit to view">
+              <Maximize2 className="h-4 w-4" />
             </button>
             {onToggleLabels && (
-              <button
-                onClick={onToggleLabels}
-                className={`px-2 py-0.5 rounded-md transition ${
-                  showLabels ? "bg-slate-700 text-amber-300" : "hover:bg-slate-800 text-slate-400"
-                }`}
-                title="Toggle 3D bubble numbers"
-              >
-                #
+              <button onClick={onToggleLabels} className={iconBtn(showLabels)} title="Bubble numbers">
+                <Hash className="h-4 w-4" />
               </button>
             )}
             {onToggleGhost && (
-              <button
-                onClick={onToggleGhost}
-                className={`px-2 py-0.5 rounded-md transition ${
-                  showGhost ? "bg-slate-700 text-amber-300" : "hover:bg-slate-800 text-slate-400"
-                }`}
-                title="Toggle tiered forecast of the next three build steps"
-              >
-                👻
+              <button onClick={onToggleGhost} className={iconBtn(showGhost)} title="Preview the next steps">
+                <Ghost className="h-4 w-4" />
               </button>
             )}
-            <button
-              onClick={() => setWireframe((w) => !w)}
-              className={`px-2 py-0.5 rounded-md transition ${
-                wireframe ? "bg-cyan-500 text-slate-950 font-bold" : "hover:bg-slate-800"
-              }`}
-              title="Toggle wireframe latex mesh"
-            >
-              🌐
+            <button onClick={() => setWireframe((w) => !w)} className={iconBtn(wireframe)} title="Wireframe">
+              <Boxes className="h-4 w-4 opacity-70" />
             </button>
           </div>
         </div>
 
-        {/* LEFT FLOATING PALETTE INSIDE 3D SIMULATION: Click OR Drag-and-Drop Twists Onto Model! */}
+        {/* twist palette */}
         {paletteOpen && onAddTwistPreset && (
-          <div className="absolute top-14 left-2.5 z-20 w-[132px] max-h-[305px] overflow-y-auto bg-slate-900/88 backdrop-blur-md p-2 rounded-xl border border-slate-700/70 shadow-xl space-y-1">
-            <div className="text-[9px] font-black uppercase tracking-wider text-amber-400 px-1 flex items-center justify-between">
-              <span>+ Add / Drop Twist</span>
+          <div className="hud absolute left-2.5 top-14 z-30 w-[150px] space-y-1 p-2">
+            <div className="flex items-center justify-between px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              <span>Add twist</span>
             </div>
-            <div className="grid grid-cols-1 gap-1">
+            <div className="max-h-[300px] space-y-0.5 overflow-y-auto scrollbar-thin">
               {ADD_TWIST_PALETTE.map((item) => (
                 <button
                   key={item.kind}
@@ -1502,44 +1539,38 @@ export const ThreeBalloonViewer = forwardRef<
                     setDropPreview({ preset: item.kind, bubbleIndex: null, convertMode: false });
                   }}
                   onDragEnd={() => setDropPreview(null)}
-                  onClick={() => onAddTwistPreset(item.kind, safeIdx)}
-                  className="px-2 py-1 rounded-lg bg-slate-950/90 hover:bg-amber-500 hover:text-slate-950 text-left text-[11px] font-semibold text-slate-200 border border-slate-800 transition flex items-center gap-1.5 cursor-grab active:cursor-grabbing"
-                  title={`${item.hint} — Click to insert after Bubble #${safeIdx + 1}, or drag & drop directly onto any 3D bubble!`}
+                  onClick={() =>
+                    onAddTwistPreset(item.kind, hasBubbles ? safeIdx : undefined, hasBubbles ? undefined : selBalloon?.id)
+                  }
+                  className="flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium text-slate-200 transition hover:bg-amber-400 hover:text-slate-950 active:cursor-grabbing"
+                  title={`${item.hint}. Click to add after the selected bubble, or drag onto any bubble.`}
                 >
-                  <span className="shrink-0">{item.icon}</span>
+                  <item.Icon className="h-3.5 w-3.5 shrink-0 opacity-80" />
                   <span className="truncate">{item.label}</span>
                 </button>
               ))}
             </div>
             {onAddBalloon && (
-              <div className="pt-1 border-t border-slate-800 space-y-1">
-                <div className="text-[9px] font-bold uppercase text-slate-400 px-1">+ New Balloon</div>
-                <div className="grid grid-cols-3 gap-1">
-                  {(["160", "260", "360"] as BalloonSize[]).map((sz) => (
-                    <button
-                      key={sz}
-                      onClick={() => onAddBalloon(sz, "#38BDF8", "Pale Blue")}
-                      className="py-1 rounded bg-cyan-950/80 hover:bg-cyan-500 hover:text-slate-950 text-cyan-300 font-mono font-bold text-[10px] border border-cyan-800/60 transition"
-                      title={`Attach a new ${sz} balloon at the current joint`}
-                    >
-                      +{sz}
-                    </button>
-                  ))}
-                </div>
+              <div className="border-t border-slate-800 pt-1.5">
+                <AddBalloonPopover
+                  bubbles={bubbles}
+                  selectedBubbleIndex={hasBubbles ? safeIdx : null}
+                  usedColors={balloons.map((b) => b.color)}
+                  onAdd={onAddBalloon}
+                  compact
+                  direction="up"
+                  className="w-full [&>button]:w-full"
+                />
               </div>
             )}
           </div>
         )}
 
-        {/* Instability Banner when an active issue exists */}
+        {/* instability banner */}
         {!stability.isStable && firstUntwistIssue && (
-          <div className="absolute top-14 right-2.5 z-20 max-w-[300px] bg-rose-950/92 backdrop-blur-md border border-rose-500/60 rounded-xl p-2.5 text-[11px] text-rose-100 shadow-xl space-y-1.5">
-            <div className="font-bold text-rose-300 flex items-center justify-between gap-2">
-              <span>⚠️ {firstUntwistIssue.title}</span>
-            </div>
-            <p className="text-[10px] text-rose-200/90 leading-snug">
-              {firstUntwistIssue.whatHappensWhenReleased}
-            </p>
+          <div className="hud absolute right-2.5 top-14 z-20 max-w-[300px] space-y-1.5 border-rose-400/30 p-2.5 text-xs text-rose-100">
+            <div className="font-semibold text-rose-200">{firstUntwistIssue.title}</div>
+            <p className="text-[11px] leading-snug text-rose-100/80">{firstUntwistIssue.whatHappensWhenReleased}</p>
             {onApplyAutoFix && (
               <div className="flex items-center gap-1.5 pt-0.5">
                 <button
@@ -1547,278 +1578,262 @@ export const ThreeBalloonViewer = forwardRef<
                     onApplyAutoFix(firstUntwistIssue.fix);
                     setReleasedHands(false);
                   }}
-                  className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[10px] transition shadow"
+                  className="btn btn-success btn-xs"
                 >
-                  🔧 {firstUntwistIssue.fixLabel}
+                  {firstUntwistIssue.fixLabel}
                 </button>
-                <button
-                  onClick={() => setReleasedHands((r) => !r)}
-                  className="px-2 py-1 rounded-lg bg-rose-900/80 hover:bg-rose-800 text-rose-200 text-[10px] font-semibold transition"
-                >
-                  {releasedHands ? "✊ Hold Back" : "🖐️ Watch Unravel"}
+                <button onClick={() => setReleasedHands((r) => !r)} className="btn btn-ghost btn-xs">
+                  {releasedHands ? "Hold again" : "Watch it unravel"}
                 </button>
               </div>
             )}
           </div>
         )}
 
-        {/* BOTTOM DOCK RIGHT INSIDE THE 3D VIEWPORT: Selected Bubble Direct Controls + Step Bar */}
-        <div className="absolute bottom-2.5 left-2.5 right-2.5 z-20 bg-slate-900/92 backdrop-blur-md border border-slate-700/80 rounded-xl p-2.5 shadow-2xl space-y-2 text-xs">
-          {/* Header Row: Selected Bubble Picker + Direct Twist Switcher + Add/Delete + Collapse */}
+        {/* bottom dock */}
+        <div className="hud absolute bottom-2.5 left-2.5 right-2.5 z-20 space-y-2 p-2.5 text-xs">
+          {!hasBubbles && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-slate-300">
+                <span className="font-semibold text-white">Blank balloon.</span> Pick a twist from the palette
+                to make the first bubble
+                {selBalloon ? (
+                  <>
+                    {" "}on <span className="font-semibold" style={{ color: selBalloon.color }}>{selBalloon.name}</span>
+                  </>
+                ) : null}
+                .
+              </div>
+              {balloons.length > 1 && onSetActiveBalloon && (
+                <select
+                  value={selBalloon?.id ?? ""}
+                  onChange={(e) => onSetActiveBalloon(e.target.value)}
+                  className="select"
+                  title="Which balloon receives the next bubble"
+                >
+                  {balloons.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name} ({b.size} {b.colorName})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {/* multi-selection bar */}
+          {multi && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 py-1.5">
+              <span className="font-semibold text-cyan-100">
+                {multiSelection.length} selected · {sortedSel.map((i) => `#${i + 1}`).join(" ")}
+              </span>
+              {onTwistTogether && (
+                <button onClick={() => onTwistTogether(sortedSel)} className="btn btn-primary btn-xs">
+                  <Link2 className="h-3.5 w-3.5" /> {twistTogetherLabel}
+                </button>
+              )}
+              {onEqualizeLengths && (
+                <button onClick={() => onEqualizeLengths(sortedSel)} className="btn btn-secondary btn-xs" title="Give all selected bubbles the same length">
+                  <Equal className="h-3.5 w-3.5" /> Equalize
+                </button>
+              )}
+              {onReleaseTwists && (
+                <button onClick={() => onReleaseTwists(sortedSel)} className="btn btn-secondary btn-xs" title="Back to plain basic twists">
+                  <Unlink className="h-3.5 w-3.5" /> Unlock
+                </button>
+              )}
+              {onDeleteBubble && (
+                <button onClick={() => onDeleteBubble(safeIdx)} className="btn btn-danger btn-xs">
+                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                </button>
+              )}
+              <button onClick={onClearSelection} className="btn btn-ghost btn-icon ml-auto h-6 w-6" title="Clear selection (Esc)">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* selected bubble row */}
           {selBubble && (
             <div className="flex flex-wrap items-center gap-1.5">
               <button
                 onClick={() => setHudOpen((o) => !o)}
-                className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold"
-                title={hudOpen ? "Collapse in-viewport sliders" : "Expand in-viewport sliders"}
+                className="btn btn-ghost btn-xs"
+                title={hudOpen ? "Collapse sliders" : "Expand sliders"}
               >
-                {hudOpen ? "▼" : "▲"} #{safeIdx + 1}
+                {hudOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+                <span className="font-mono">#{safeIdx + 1}</span>
               </button>
-
-              <button
-                onClick={() => onSelectBubble?.(Math.max(0, safeIdx - 1))}
-                disabled={safeIdx === 0}
-                className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px] disabled:opacity-30"
-                title="Select previous bubble"
-              >
-                ◀
+              <button onClick={() => onSelectBubble?.(Math.max(0, safeIdx - 1))} disabled={safeIdx === 0} className="btn btn-ghost btn-icon h-7 w-7" title="Previous bubble">
+                <ChevronLeft className="h-4 w-4" />
               </button>
               <input
                 type="text"
                 value={selBubble.label}
                 onChange={(e) => onUpdateBubble?.(safeIdx, { label: e.target.value })}
-                className="w-28 sm:w-36 px-2 py-0.5 rounded bg-slate-950 border border-slate-700 text-[11px] font-semibold text-white focus:outline-none focus:border-cyan-400"
+                className="input input-sm w-32 sm:w-40"
               />
-              <button
-                onClick={() => onSelectBubble?.(Math.min(bubbles.length - 1, safeIdx + 1))}
-                disabled={safeIdx >= bubbles.length - 1}
-                className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px] disabled:opacity-30"
-                title="Select next bubble"
-              >
-                ▶
+              <button onClick={() => onSelectBubble?.(Math.min(bubbles.length - 1, safeIdx + 1))} disabled={safeIdx >= bubbles.length - 1} className="btn btn-ghost btn-icon h-7 w-7" title="Next bubble">
+                <ChevronRight className="h-4 w-4" />
               </button>
 
-              {/* Direct Twist Type Changer */}
               <select
                 value={selBubble.twistType}
                 onChange={(e) => {
                   const t = e.target.value as TwistType;
-                  onUpdateBubble?.(safeIdx, {
-                    twistType: t,
-                    isLoop: t === "loop",
-                    isPinch: t === "pinch" || t === "toe",
-                    isTulip: t === "tulip" || t === "tulip_chain",
-                  });
+                  onUpdateBubble?.(safeIdx, { twistType: t, ...twistFlags(t) });
                 }}
-                className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-300 font-semibold text-[11px] focus:outline-none"
-                title="Change this bubble's twist formation"
+                className="select border-amber-400/40 text-amber-200"
+                title="Twist formation"
               >
                 {Object.values(TWIST_ENCYCLOPEDIA).map((tw) => (
                   <option key={tw.type} value={tw.type} className="bg-slate-900 text-white">
-                    🔄 {tw.name}
+                    {tw.name}
                   </option>
                 ))}
               </select>
 
-              {/* Quick 160 / 260 / 360 Gauge Buttons */}
-              <div className="flex rounded overflow-hidden border border-slate-700 bg-slate-950">
-                {(
-                  [
-                    ["160", 1.0],
-                    ["260", 2.0],
-                    ["360", 3.0],
-                  ] as Array<[BalloonSize, number]>
-                ).map(([label, d]) => (
-                  <button
-                    key={label}
-                    onClick={() => onUpdateBubble?.(safeIdx, { diameterInches: d }, pairSync)}
-                    className={`px-1.5 py-0.5 text-[10px] font-mono font-bold ${
-                      Math.abs((selBubble.diameterInches || 2) - d) < 0.35
-                        ? "bg-cyan-500 text-slate-950"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                    title={`Set bubble gauge to ${label} (${d}″ diameter)`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {onSplitBubble && <SplitMenu bubble={selBubble} onSplit={(m) => onSplitBubble(safeIdx, m)} compact />}
 
               {selLayout?.partnerIndex !== undefined && (
                 <button
                   onClick={() => setPairSync((s) => !s)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
-                    pairSync
-                      ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300"
-                      : "bg-slate-800 border-slate-700 text-slate-400"
-                  }`}
-                  title="Keep paired lock bubbles equal when dragging size in 3D"
+                  className={`btn btn-xs ${pairSync ? "btn-active" : "btn-secondary"}`}
+                  title="Keep paired lock bubbles equal while resizing"
                 >
-                  🔗 Pair {pairSync ? "ON" : "OFF"}
+                  <Link2 className="h-3.5 w-3.5" /> Pair {pairSync ? "on" : "off"}
                 </button>
               )}
 
               <div className="ml-auto flex items-center gap-1">
-                <button
-                  onClick={() => onAddTwistPreset?.("basic", safeIdx)}
-                  className="px-2 py-0.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px]"
-                  title="Insert bubble right after selected"
-                >
-                  + Bubble
+                <button onClick={() => onAddTwistPreset?.("basic", safeIdx)} className="btn btn-success btn-xs" title="Insert a bubble right after this one">
+                  <Plus className="h-3.5 w-3.5" /> Bubble
                 </button>
-                <button
-                  onClick={() => onDuplicateBubble?.(safeIdx)}
-                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px]"
-                  title="Duplicate selected bubble"
-                >
-                  ⧉
+                <button onClick={() => onDuplicateBubble?.(safeIdx)} className="btn btn-secondary btn-icon h-7 w-7" title="Duplicate">
+                  <Copy className="h-3.5 w-3.5" />
                 </button>
-                <button
-                  onClick={() => onDeleteBubble?.(safeIdx)}
-                  disabled={bubbles.length <= 1}
-                  className="px-2 py-0.5 rounded bg-rose-950/80 hover:bg-rose-600 text-rose-300 hover:text-white font-bold text-[11px] disabled:opacity-30"
-                  title="Remove selected bubble"
-                >
-                  − Remove
+                <button onClick={() => onDeleteBubble?.(safeIdx)} className="btn btn-danger btn-icon h-7 w-7" title="Delete (Del)">
+                  <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
             </div>
           )}
 
-          {/* Expandable Direct Sliders + Color Dots + 3D Handle Legend */}
           {hudOpen && selBubble && (
-            <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
-                <div>
-                  <div className="flex justify-between text-[10px] text-slate-400">
-                    <span>🔵 Length (or drag cyan tip)</span>
-                    <span className="font-mono text-cyan-300">
-                      {selBubble.lengthInches}″ ({inchesToFingers(selBubble.lengthInches)}f)
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.5}
-                    max={24}
-                    step={0.25}
-                    value={selBubble.lengthInches}
-                    onChange={(e) =>
-                      onUpdateBubble?.(
-                        safeIdx,
-                        { lengthInches: parseFloat(e.target.value) },
-                        pairSync
-                      )
-                    }
-                    className="w-full accent-cyan-400 h-1.5 cursor-pointer"
-                  />
+            <div className="grid grid-cols-1 items-center gap-x-3 gap-y-1.5 border-t border-slate-800/80 pt-2 sm:grid-cols-4">
+              <SliderRow
+                label="Length"
+                value={`${selBubble.lengthInches}″ · ${inchesToFingers(selBubble.lengthInches)}f`}
+                min={0.5}
+                max={24}
+                step={0.25}
+                current={selBubble.lengthInches}
+                onChange={(v) => onUpdateBubble?.(safeIdx, { lengthInches: v }, pairSync)}
+                accent="cyan"
+              />
+              <SliderRow
+                label="Bend"
+                value={`${selBubble.bend ?? 0}°`}
+                min={-160}
+                max={160}
+                step={5}
+                current={selBubble.bend ?? 0}
+                onChange={(v) => onUpdateBubble?.(safeIdx, { bend: v })}
+              />
+              <SliderRow
+                label="Turn"
+                value={`${selBubble.turn ?? 0}°`}
+                min={-160}
+                max={160}
+                step={5}
+                current={selBubble.turn ?? 0}
+                onChange={(v) => onUpdateBubble?.(safeIdx, { turn: v })}
+              />
+              <div>
+                <div className="flex justify-between text-[11px] text-slate-400">
+                  <span>Gauge</span>
+                  <span className="font-mono text-slate-300">{selBubble.diameterInches}″</span>
                 </div>
-
-                <div>
-                  <div className="flex justify-between text-[10px] text-slate-400">
-                    <span>🟠 Bend Up/Down (drag gold handle)</span>
-                    <span className="font-mono text-amber-300">{selBubble.bend ?? 0}°</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={-160}
-                    max={160}
-                    step={5}
-                    value={selBubble.bend ?? 0}
-                    onChange={(e) =>
-                      onUpdateBubble?.(safeIdx, { bend: parseInt(e.target.value) })
-                    }
-                    className="w-full accent-amber-400 h-1.5 cursor-pointer"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-[10px] text-slate-400">
-                    <span>🟠 Turn Left/Right</span>
-                    <span className="font-mono text-amber-300">{selBubble.turn ?? 0}°</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={-160}
-                    max={160}
-                    step={5}
-                    value={selBubble.turn ?? 0}
-                    onChange={(e) =>
-                      onUpdateBubble?.(safeIdx, { turn: parseInt(e.target.value) })
-                    }
-                    className="w-full accent-amber-400 h-1.5 cursor-pointer"
-                  />
-                </div>
-              </div>
-
-              {/* Color Swatches + Step Scrubber right inside viewport */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                <div className="flex items-center gap-1">
-                  {TWISTER_COLORS.slice(0, 12).map((colorOption) => (
+                <div className="seg mt-0.5 w-full">
+                  {([["160", 1.0], ["260", 2.0], ["360", 3.0]] as Array<[string, number]>).map(([label, d]) => (
                     <button
-                      key={colorOption.name}
-                      onClick={() =>
-                        selBalloon &&
-                        onUpdateBalloon?.(selBalloon.id, {
-                          color: colorOption.hex,
-                          colorName: colorOption.name,
-                        })
-                      }
-                      className={`w-4 h-4 rounded-full border transition hover:scale-125 ${
-                        selBalloon?.color.toLowerCase() === colorOption.hex.toLowerCase()
-                          ? "border-white ring-2 ring-cyan-400"
-                          : "border-white/20"
-                      }`}
-                      style={{ backgroundColor: colorOption.hex }}
-                      title={`${colorOption.name} — recolors the entire ${selBalloon?.size ?? ""} balloon`}
-                    />
+                      key={label}
+                      onClick={() => onUpdateBubble?.(safeIdx, { diameterInches: d }, pairSync)}
+                      className={`seg-item flex-1 font-mono ${Math.abs((selBubble.diameterInches || 2) - d) < 0.35 ? "seg-item-active" : ""}`}
+                    >
+                      {label}
+                    </button>
                   ))}
-                  {selBalloon && (
-                    <span className="text-[10px] text-slate-500 ml-1 font-mono">
-                      {selBalloon.name}
-                    </span>
-                  )}
                 </div>
-
-                {/* Inline Step Switcher synced with 3D Build */}
-                {onSelectStep && onBuildModeChange && (
-                  <div className="flex items-center gap-1 text-[11px]">
-                    <button
-                      onClick={() => onBuildModeChange(buildMode === "step" ? "final" : "step")}
-                      className={`px-2 py-0.5 rounded font-bold ${
-                        buildMode === "final"
-                          ? "bg-emerald-500 text-slate-950"
-                          : "bg-amber-500 text-slate-950"
-                      }`}
-                    >
-                      {buildMode === "final"
-                        ? `★ Final (${bubbles.length})`
-                        : `🪜 Step ${currentStepIndex + 1}/${steps.length} (${formedCount}/${bubbles.length})`}
-                    </button>
-                    <button
-                      onClick={() => {
-                        onBuildModeChange("step");
-                        onSelectStep(Math.max(0, currentStepIndex - 1));
-                      }}
-                      disabled={currentStepIndex <= 0}
-                      className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30"
-                    >
-                      ◀
-                    </button>
-                    <button
-                      onClick={() => {
-                        onBuildModeChange("step");
-                        onSelectStep(Math.min(steps.length - 1, currentStepIndex + 1));
-                      }}
-                      disabled={currentStepIndex >= steps.length - 1}
-                      className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-30"
-                    >
-                      ▶
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
           )}
+
+          {/* air gauges + balloon color + step switcher */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-800/80 pt-2">
+            <div className="flex min-w-[220px] flex-1 flex-col gap-1">
+              {balloons.map((bal) => {
+                const air = airByBalloon.get(bal.id);
+                if (!air || !vis.introducedBalloons.has(bal.id)) return null;
+                return (
+                  <button
+                    key={bal.id}
+                    onClick={() => onSetActiveBalloon?.(bal.id)}
+                    className={`rounded-md px-1 py-0.5 text-left transition hover:bg-slate-800/60 ${
+                      selBalloon?.id === bal.id ? "bg-slate-800/40" : ""
+                    }`}
+                    title={`${bal.name}: ${air.statusMessage}`}
+                  >
+                    <AirBudgetBar air={air} color={bal.color} compact />
+                  </button>
+                );
+              })}
+            </div>
+
+            {selBalloon && onUpdateBalloon && (
+              <ColorPicker
+                size="sm"
+                value={selBalloon.color}
+                valueName={selBalloon.colorName}
+                label={`${selBalloon.size} ${selBalloon.colorName}`}
+                onChange={(hex, name) => onUpdateBalloon(selBalloon.id, { color: hex, colorName: name })}
+              />
+            )}
+
+            {onSelectStep && onBuildModeChange && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => onBuildModeChange(buildMode === "step" ? "final" : "step")}
+                  className={`btn btn-xs ${buildMode === "final" ? "btn-success" : "btn-primary"}`}
+                  title="Toggle between the step-by-step build and the finished shape"
+                >
+                  {buildMode === "final"
+                    ? `Final · ${bubbles.length} bubbles`
+                    : `Step ${currentStepIndex + 1}/${steps.length} · ${formedCount}/${bubbles.length}`}
+                </button>
+                <button
+                  onClick={() => {
+                    onBuildModeChange("step");
+                    onSelectStep(Math.max(0, currentStepIndex - 1));
+                  }}
+                  disabled={currentStepIndex <= 0}
+                  className="btn btn-ghost btn-icon h-7 w-7"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    onBuildModeChange("step");
+                    onSelectStep(Math.min(steps.length - 1, currentStepIndex + 1));
+                  }}
+                  disabled={currentStepIndex >= steps.length - 1}
+                  className="btn btn-ghost btn-icon h-7 w-7"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -1826,3 +1841,30 @@ export const ThreeBalloonViewer = forwardRef<
 );
 
 ThreeBalloonViewer.displayName = "ThreeBalloonViewer";
+
+const SliderRow: React.FC<{
+  label: string;
+  value: string;
+  min: number;
+  max: number;
+  step: number;
+  current: number;
+  onChange: (v: number) => void;
+  accent?: "cyan" | "amber";
+}> = ({ label, value, min, max, step, current, onChange, accent = "amber" }) => (
+  <div>
+    <div className="flex justify-between text-[11px] text-slate-400">
+      <span>{label}</span>
+      <span className={`font-mono ${accent === "cyan" ? "text-cyan-200" : "text-amber-200"}`}>{value}</span>
+    </div>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={current}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      className={`range ${accent === "cyan" ? "accent-cyan-400" : ""}`}
+    />
+  </div>
+);
