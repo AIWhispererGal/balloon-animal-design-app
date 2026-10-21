@@ -4,20 +4,30 @@ import React, { useEffect } from "react";
 import { X } from "lucide-react";
 import { ComplexityLevel, FullDesign } from "@/types/balloon";
 import { PromptImageConverter } from "./PromptImageConverter";
+import { DesignLibrary } from "./DesignLibrary";
+import { SavedProjectSummary } from "@/lib/designStorage";
 
 interface NewDesignModalProps {
   isOpen: boolean;
   onClose: () => void;
   onDesignsGenerated: (designs: Record<ComplexityLevel, FullDesign>, label: string) => void;
   onStartBlankSlate: () => void;
+  projects: SavedProjectSummary[];
+  onOpenProject: (id: string) => void;
+  onDeleteProject: (id: string) => void;
+  onImportFile: (file: File) => void;
 }
 
-/** The item / image → three tiers generator, kept out of the way in a modal. */
+/** New designs (generator / blank slate) and the saved-design library, in one modal. */
 export const NewDesignModal: React.FC<NewDesignModalProps> = ({
   isOpen,
   onClose,
   onDesignsGenerated,
   onStartBlankSlate,
+  projects,
+  onOpenProject,
+  onDeleteProject,
+  onImportFile,
 }) => {
   useEffect(() => {
     if (!isOpen) return;
@@ -37,7 +47,7 @@ export const NewDesignModal: React.FC<NewDesignModalProps> = ({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="relative w-full max-w-4xl">
+      <div className="relative w-full max-w-4xl space-y-4">
         <button
           onClick={onClose}
           className="btn btn-icon btn-secondary absolute -right-2 -top-2 z-10 rounded-full"
@@ -54,6 +64,12 @@ export const NewDesignModal: React.FC<NewDesignModalProps> = ({
             onStartBlankSlate();
             onClose();
           }}
+        />
+        <DesignLibrary
+          projects={projects}
+          onOpen={onOpenProject}
+          onDelete={onDeleteProject}
+          onImportFile={onImportFile}
         />
       </div>
     </div>

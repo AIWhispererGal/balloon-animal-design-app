@@ -1,5 +1,5 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "balloon-animal-design-app",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,12 +10,9 @@
   },
   "dependencies": {
     "@types/three": "^0.186.0",
-    "dotenv": "17.3.1",
-    "drizzle-orm": "0.45.2",
     "html-to-image": "^1.11.13",
     "lucide-react": "^1.60.0",
     "next": "16.2.6",
-    "pg": "8.20.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "three": "^0.186.1"
@@ -23,10 +20,8 @@
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
-    "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "postcss": "8.5.8",

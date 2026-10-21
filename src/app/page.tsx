@@ -5,6 +5,7 @@ import {
   BookOpen,
   Camera,
   Download,
+  FileDown,
   Layers,
   ListOrdered,
   Plus,
@@ -56,6 +57,17 @@ import { TwistEncyclopediaModal } from "@/components/TwistEncyclopediaModal";
 import { ExportCardModal } from "@/components/ExportCardModal";
 import { TailAllowanceMeter } from "@/components/TailAllowanceMeter";
 import { NewDesignModal } from "@/components/NewDesignModal";
+import {
+  SavedProject,
+  SavedProjectSummary,
+  deleteProject,
+  downloadProjectJson,
+  listProjects,
+  loadProject,
+  makeProject,
+  readProjectFile,
+  saveProject,
+} from "@/lib/designStorage";
 import { AddBalloonRequest } from "@/components/AddBalloonPopover";
 
 export default function BalloonAppPage() {
@@ -79,6 +91,9 @@ export default function BalloonAppPage() {
   );
 
   const [isNewDesignOpen, setIsNewDesignOpen] = useState(false);
+  /** Identity of the saved project this session was opened from (null = unsaved) */
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [savedProjects, setSavedProjects] = useState<SavedProjectSummary[]>([]);
   const [isEncyclopediaOpen, setIsEncyclopediaOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [capturedPngUrl, setCapturedPngUrl] = useState<string | null>(null);
@@ -231,6 +246,7 @@ export default function BalloonAppPage() {
     promptOrLabel: string
   ) => {
     setDesignTierMap(newDesigns);
+    setProjectId(null);
     setBuildMode("step");
     setCurrentStepIndex(Math.max(0, newDesigns[activeComplexity].steps.length - 1));
     setSelectedIndices([0]);
@@ -241,6 +257,7 @@ export default function BalloonAppPage() {
   const handleStartBlankSlate = () => {
     const blankDesigns = createBlankSlateDesign();
     setDesignTierMap(blankDesigns);
+    setProjectId(null);
     setActiveComplexity("beginner");
     setBuildMode("step");
     setCurrentStepIndex(0);
@@ -618,31 +635,82 @@ export default function BalloonAppPage() {
     }, 350);
   };
 
-  const handleSaveToDatabase = async () => {
-    try {
-      showToast("Saving design…");
-      const res = await fetch("/api/designs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: currentDesign.id,
-          title: currentDesign.title,
-          description: currentDesign.description,
-          category: currentDesign.category,
-          complexity: currentDesign.complexity,
-          balloons: currentDesign.balloons,
-          bubbles: currentDesign.bubbles,
-          steps: currentDesign.steps,
-          annotations: currentDesign.annotations,
-          sourceType: currentDesign.sourceType,
-          sourcePrompt: currentDesign.sourcePrompt,
-        }),
-      });
-      showToast(res.ok ? "Design saved." : "Could not save the design.");
-    } catch {
-      showToast("Could not reach the database.");
+  /* ---------------- save / open (browser storage + JSON files) ---------------- */
+
+  const refreshLibrary = useCallback(() => setSavedProjects(listProjects()), []);
+
+  const handleSave = () => {
+    const project = makeProject(designTierMap, activeComplexity, projectId ?? undefined, currentDesign.title);
+    if (saveProject(project)) {
+      setProjectId(project.id);
+      refreshLibrary();
+      showToast(`Saved “${project.title}” in this browser.`);
+    } else {
+      showToast("Could not save: browser storage is unavailable or full. Download the design as a file instead.");
     }
   };
+
+  const handleDownloadJson = () => {
+    downloadProjectJson(makeProject(designTierMap, activeComplexity, projectId ?? undefined, currentDesign.title));
+    showToast("Design file downloaded.");
+  };
+
+  const applyProject = useCallback((project: SavedProject) => {
+    setDesignTierMap(project.tiers);
+    setActiveComplexity(project.activeComplexity);
+    setProjectId(project.id);
+    setBuildMode("step");
+    const d = project.tiers[project.activeComplexity];
+    setCurrentStepIndex(Math.max(0, d.steps.length - 1));
+    setSelectedIndices(d.bubbles.length ? [0] : []);
+    setActiveBalloonId(d.balloons[0]?.id ?? null);
+  }, []);
+
+  const handleOpenProject = (id: string) => {
+    const project = loadProject(id);
+    if (!project) {
+      showToast("That design is no longer in this browser.");
+      refreshLibrary();
+      return;
+    }
+    applyProject(project);
+    setIsNewDesignOpen(false);
+    showToast(`Opened “${project.title}”.`);
+  };
+
+  const handleDeleteProject = (id: string) => {
+    deleteProject(id);
+    if (projectId === id) setProjectId(null);
+    refreshLibrary();
+  };
+
+  const handleImportFile = async (file: File) => {
+    try {
+      const project = await readProjectFile(file);
+      applyProject(project);
+      setIsNewDesignOpen(false);
+      showToast(`Imported “${project.title}”. Press Save to keep it in this browser.`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not read that file.");
+    }
+  };
+
+  const openNewDesign = () => {
+    refreshLibrary();
+    setIsNewDesignOpen(true);
+  };
+
+  // Ctrl/Cmd+S saves to the browser
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        handleSave();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const untwistCount = liveSim.stability.untwistCount;
   const worstAir = airByBalloon.find((a) => a.air.status === "over_budget" || a.air.status === "pop_risk");
@@ -690,16 +758,20 @@ export default function BalloonAppPage() {
           </div>
 
           <div className="flex items-center gap-1.5">
-            <button onClick={() => setIsNewDesignOpen(true)} className="btn btn-primary">
-              <Plus className="h-3.5 w-3.5" /> New design
+            <button onClick={openNewDesign} className="btn btn-primary">
+              <Plus className="h-3.5 w-3.5" /> New / open
             </button>
             <button onClick={() => setIsEncyclopediaOpen(true)} className="btn btn-ghost" title="Twist encyclopedia">
               <BookOpen className="h-4 w-4" />
               <span className="hidden lg:inline">Twists</span>
             </button>
-            <button onClick={handleSaveToDatabase} className="btn btn-ghost" title="Save to database">
+            <button onClick={handleSave} className="btn btn-ghost" title="Save in this browser (Ctrl/Cmd+S)">
               <Save className="h-4 w-4" />
               <span className="hidden lg:inline">Save</span>
+            </button>
+            <button onClick={handleDownloadJson} className="btn btn-ghost" title="Download the design as a file you can import on any device">
+              <FileDown className="h-4 w-4" />
+              <span className="hidden lg:inline">File</span>
             </button>
             <button onClick={handleCapturePng} className="btn btn-secondary" title="Export PNG & instruction card">
               <Download className="h-4 w-4" />
@@ -945,6 +1017,10 @@ export default function BalloonAppPage() {
         onClose={() => setIsNewDesignOpen(false)}
         onDesignsGenerated={handleDesignsGenerated}
         onStartBlankSlate={handleStartBlankSlate}
+        projects={savedProjects}
+        onOpenProject={handleOpenProject}
+        onDeleteProject={handleDeleteProject}
+        onImportFile={handleImportFile}
       />
 
       <TwistEncyclopediaModal
