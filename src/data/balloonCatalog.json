@@ -1,0 +1,16 @@
+{
+  "source": "sample (placeholder until the La Rock's catalog is imported)",
+  "fetchedAt": "2026-10-21",
+  "currency": "USD",
+  "sample": true,
+  "items": [
+    { "id": "sample-q-160-orange", "name": "Qualatex 160Q Orange (100 ct)", "brand": "Qualatex", "size": "160", "color": "Orange", "colorFamily": "orange", "finish": "standard", "packQty": 100, "price": 11.95, "pricePerBalloon": 0.1195, "hex": "#EA580C" },
+    { "id": "sample-q-160-white", "name": "Qualatex 160Q White (100 ct)", "brand": "Qualatex", "size": "160", "color": "White", "colorFamily": "white", "finish": "standard", "packQty": 100, "price": 11.95, "pricePerBalloon": 0.1195, "hex": "#F8FAFC" },
+    { "id": "sample-q-260-jewel-green", "name": "Qualatex 260Q Jewel Emerald Green (100 ct)", "brand": "Qualatex", "size": "260", "color": "Jewel Emerald Green", "colorFamily": "green", "finish": "jewel", "packQty": 100, "price": 14.5, "pricePerBalloon": 0.145, "hex": "#16A34A" },
+    { "id": "sample-q-260-orange", "name": "Qualatex 260Q Orange (100 ct)", "brand": "Qualatex", "size": "260", "color": "Orange", "colorFamily": "orange", "finish": "standard", "packQty": 100, "price": 12.95, "pricePerBalloon": 0.1295, "hex": "#EA580C" },
+    { "id": "sample-q-260-red", "name": "Qualatex 260Q Red (100 ct)", "brand": "Qualatex", "size": "260", "color": "Red", "colorFamily": "red", "finish": "standard", "packQty": 100, "price": 12.95, "pricePerBalloon": 0.1295, "hex": "#E11D48" },
+    { "id": "sample-b-260-yellow", "name": "Betallatex 260B Yellow (50 ct)", "brand": "Betallatex", "size": "260", "color": "Yellow", "colorFamily": "yellow", "finish": "standard", "packQty": 50, "price": 6.25, "pricePerBalloon": 0.125, "hex": "#FACC15" },
+    { "id": "sample-q-350-silver", "name": "Qualatex 350Q Silver (100 ct)", "brand": "Qualatex", "size": "350", "color": "Silver", "colorFamily": "silver", "finish": "chrome", "packQty": 100, "price": 24.95, "pricePerBalloon": 0.2495, "hex": "#94A3B8" },
+    { "id": "sample-q-660-blue", "name": "Qualatex 660Q Dark Blue (50 ct)", "brand": "Qualatex", "size": "660", "color": "Dark Blue", "colorFamily": "blue", "finish": "standard", "packQty": 50, "price": 18.75, "pricePerBalloon": 0.375, "hex": "#2563EB" }
+  ]
+}

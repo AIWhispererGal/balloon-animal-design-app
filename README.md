@@ -12,6 +12,7 @@ A Next.js app for designing balloon animals: build a design in a 3D viewer, pick
 - **Balloons**: add a 160, 260 or 360 in any color, tied into an existing joint or free-standing, and recolor a balloon from the viewport dock or the Build tab.
 - **Blank slate**: start from one empty inflated balloon and add twists from the palette (click or drag onto the model).
 - **Stability check**: unanchored twists are flagged with a one-click fix, and "Let go" shows what unravels.
+- **Shopping** (`/shopping`): build a balloon recipe from a catalog of packs (brand, size, color, pack size, price), see the cost of one sculpture, and plan a purchase: pick one pack as the anchor and the planner works out how many packs of everything else to buy and how many sculptures that makes. "Shop" on the Steps tab pre-fills the recipe from the current design. Recipes save in the browser and export as JSON with price per balloon. The catalog lives in `src/data/balloonCatalog.json`; until the La Rock's listing is imported it holds clearly marked sample prices.
 - **Save and share**: Save keeps the design in this browser (Ctrl/Cmd+S). File downloads it as `.twistcraft.json`; New / open lists saved designs and imports files. Export renders a PNG instruction card.
 
 ## Stack
@@ -58,3 +59,4 @@ Key modules:
 - `lib/designEdits.ts` holds the pure edit operations (split, twist together, insert, delete, reorder) with index-safe remapping.
 - `lib/stepGenerator.ts` compiles the step-by-step instructions from the layout and air model.
 - `lib/designStorage.ts` saves projects to local storage and reads/writes the JSON file format.
+- `lib/recipeMath.ts` costs a recipe and plans packs; `data/balloonCatalog.json` is the price list it reads.

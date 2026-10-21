@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { ArrowLeft, ArrowRight, Info, Lightbulb, Pencil, Printer, StickyNote, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Info, Lightbulb, Pencil, Printer, ShoppingCart, StickyNote, Trash2 } from "lucide-react";
 import { BalloonSpec, BubbleSpec, StepSpec, TwistType } from "@/types/balloon";
 import { StepVisualDiagram } from "./StepVisualDiagram";
 import { TWIST_ENCYCLOPEDIA } from "@/lib/balloonConstants";
@@ -18,6 +18,8 @@ interface InstructionStepDeckProps {
   onDeleteStep?: (index: number) => void;
   onOpenTwistInfo?: (twistType: TwistType) => void;
   onExportInstructions?: () => void;
+  /** Open the shopping page with this design's balloons as a recipe */
+  onShopDesign?: () => void;
 }
 
 export const InstructionStepDeck: React.FC<InstructionStepDeckProps> = ({
@@ -32,6 +34,7 @@ export const InstructionStepDeck: React.FC<InstructionStepDeckProps> = ({
   onDeleteStep,
   onOpenTwistInfo,
   onExportInstructions,
+  onShopDesign,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -90,11 +93,18 @@ export const InstructionStepDeck: React.FC<InstructionStepDeckProps> = ({
               {balloons.length} balloon{balloons.length !== 1 ? "s" : ""} · {bubbles.length} bubbles
             </p>
           </div>
-          {onExportInstructions && (
-            <button onClick={onExportInstructions} className="btn btn-secondary btn-xs">
-              <Printer className="h-3.5 w-3.5" /> Sheet / PNG
-            </button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {onShopDesign && (
+              <button onClick={onShopDesign} className="btn btn-secondary btn-xs" title="Price these balloons and plan packs">
+                <ShoppingCart className="h-3.5 w-3.5" /> Shop
+              </button>
+            )}
+            {onExportInstructions && (
+              <button onClick={onExportInstructions} className="btn btn-secondary btn-xs">
+                <Printer className="h-3.5 w-3.5" /> Sheet / PNG
+              </button>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-1 gap-2">
           {balloons.map((bal, idx) => {

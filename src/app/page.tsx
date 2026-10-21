@@ -11,8 +11,11 @@ import {
   Plus,
   Save,
   Scale,
+  ShoppingCart,
   Wrench,
 } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ComplexityLevel,
   FullDesign,
@@ -74,8 +77,10 @@ import {
   saveProject,
 } from "@/lib/designStorage";
 import { AddBalloonRequest } from "@/components/AddBalloonPopover";
+import { setRecipeHandoff } from "@/lib/recipeStorage";
 
 export default function BalloonAppPage() {
+  const router = useRouter();
   const [designTierMap, setDesignTierMap] = useState<Record<ComplexityLevel, FullDesign>>(
     PRESET_DESIGNS.dog
   );
@@ -916,6 +921,10 @@ export default function BalloonAppPage() {
               <FileDown className="h-4 w-4" />
               <span className="hidden lg:inline">File</span>
             </button>
+            <Link href="/shopping" className="btn btn-ghost" title="Balloon recipes, cost per sculpture and pack planning">
+              <ShoppingCart className="h-4 w-4" />
+              <span className="hidden lg:inline">Shopping</span>
+            </Link>
             <button onClick={handleCapturePng} className="btn btn-secondary" title="Export PNG & instruction card">
               <Download className="h-4 w-4" />
               <span className="hidden lg:inline">Export</span>
@@ -1050,6 +1059,18 @@ export default function BalloonAppPage() {
                 onUpdateStep={handleUpdateStep}
                 onOpenTwistInfo={() => setIsEncyclopediaOpen(true)}
                 onExportInstructions={handleCapturePng}
+                onShopDesign={() => {
+                  setRecipeHandoff({
+                    designTitle: currentDesign.title,
+                    balloons: currentDesign.balloons.map((b) => ({
+                      size: b.size,
+                      colorName: b.colorName,
+                      name: b.name,
+                      hex: b.color,
+                    })),
+                  });
+                  router.push("/shopping");
+                }}
               />
             )}
 
