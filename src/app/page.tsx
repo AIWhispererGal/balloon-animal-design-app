@@ -1333,6 +1333,7 @@ function BalloonEditor() {
         isOpen={isNewDesignOpen}
         onClose={() => setIsNewDesignOpen(false)}
         onDesignsGenerated={handleDesignsGenerated}
+        currentDesign={currentDesign}
         onStartBlankSlate={handleStartBlankSlate}
         projects={savedProjects}
         onOpenProject={handleOpenProject}

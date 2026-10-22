@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { ComplexityLevel, FullDesign } from "@/types/balloon";
 import { PromptImageConverter } from "./PromptImageConverter";
 import { DesignLibrary } from "./DesignLibrary";
+import { ArchetypeBuilder } from "./ArchetypeBuilder";
 import { SavedProjectSummary } from "@/lib/designStorage";
 
 interface NewDesignModalProps {
@@ -12,6 +13,8 @@ interface NewDesignModalProps {
   onClose: () => void;
   onDesignsGenerated: (designs: Record<ComplexityLevel, FullDesign>, label: string, imageUrl?: string) => void;
   onStartBlankSlate: () => void;
+  /** Design open in the editor (can be saved as a body plan) */
+  currentDesign: FullDesign;
   projects: SavedProjectSummary[];
   onOpenProject: (id: string) => void;
   onDeleteProject: (id: string) => void;
@@ -24,6 +27,7 @@ export const NewDesignModal: React.FC<NewDesignModalProps> = ({
   onClose,
   onDesignsGenerated,
   onStartBlankSlate,
+  currentDesign,
   projects,
   onOpenProject,
   onDeleteProject,
@@ -62,6 +66,13 @@ export const NewDesignModal: React.FC<NewDesignModalProps> = ({
           }}
           onStartBlankSlate={() => {
             onStartBlankSlate();
+            onClose();
+          }}
+        />
+        <ArchetypeBuilder
+          currentDesign={currentDesign}
+          onBuild={(designs, label) => {
+            onDesignsGenerated(designs, label);
             onClose();
           }}
         />
