@@ -20,16 +20,21 @@ export interface CatalogItem {
   colorFamily?: string;
   /** Finish or line, e.g. "standard", "jewel", "fashion", "neon", "chrome", "pearl" */
   finish?: string;
+  /** Extra style tags from the listing, e.g. "nozzle-up" */
+  styles?: string[];
   packQty: number;
   price: number;
   pricePerBalloon: number;
+  sku?: string;
   url?: string;
+  image?: string;
   /** Hex swatch for display when known */
   hex?: string;
 }
 
 export interface Catalog {
   source: string;
+  sourceUrl?: string;
   fetchedAt: string;
   currency: string;
   /** True while the data is placeholder, not scraped from the store */
