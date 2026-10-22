@@ -108,6 +108,29 @@ export function transportFrame(dirIn: Vec3, hintSide: Vec3 | undefined): { side:
 
 export const roundQuarter = (v: number): number => Math.round(v * 4) / 4;
 
+/**
+ * Apply the whole-sculpture orientation (degrees [pitch, yaw, roll]) to a point,
+ * exactly as the 3D viewer rotates its pivot (Three.js XYZ Euler: roll about Z
+ * first, then yaw about Y, then pitch about X). Step diagrams use this so they
+ * show the sculpture the same way up as the design view.
+ */
+export function rotateByOrientation(p: Vec3, orientation: [number, number, number] | undefined): Vec3 {
+  if (!orientation || (!orientation[0] && !orientation[1] && !orientation[2])) return p;
+  let v: Vec3 = p;
+  const [pitch, yaw, roll] = orientation;
+  const rot = (q: Vec3, axis: Vec3, deg: number): Vec3 => {
+    if (!deg) return q;
+    const t = (deg * Math.PI) / 180;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    return vAdd(vAdd(vScale(q, c), vScale(vCross(axis, q), s)), vScale(axis, vDot(axis, q) * (1 - c)));
+  };
+  v = rot(v, [0, 0, 1], roll);
+  v = rot(v, [0, 1, 0], yaw);
+  v = rot(v, [1, 0, 0], pitch);
+  return v;
+}
+
 /* ---------------- layout & joint types ---------------- */
 
 export type BubbleKind =

@@ -1194,6 +1194,7 @@ function BalloonEditor() {
                 steps={currentDesign.steps}
                 balloons={currentDesign.balloons}
                 bubbles={currentDesign.bubbles}
+                orientation={currentDesign.orientation}
                 currentStepIndex={currentStepIndex}
                 onSelectStep={handleSelectStep}
                 onSelectBubble={(i) => handleSelectBubble(i)}

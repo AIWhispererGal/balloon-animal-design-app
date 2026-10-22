@@ -303,6 +303,7 @@ export const ExportCardModal: React.FC<ExportCardModalProps> = ({
                         bubbles={design.bubbles}
                         steps={design.steps}
                         stepIndex={index}
+                        orientation={design.orientation}
                         className="mb-2 h-36"
                       />
                     </div>

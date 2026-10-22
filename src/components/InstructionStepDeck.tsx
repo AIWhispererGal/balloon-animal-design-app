@@ -10,6 +10,8 @@ interface InstructionStepDeckProps {
   steps: StepSpec[];
   balloons: BalloonSpec[];
   bubbles?: BubbleSpec[];
+  /** Whole-sculpture orientation of the design view, mirrored in the step diagrams */
+  orientation?: [number, number, number];
   currentStepIndex: number;
   onSelectStep: (index: number) => void;
   onSelectBubble?: (bubbleIndex: number) => void;
@@ -26,6 +28,7 @@ export const InstructionStepDeck: React.FC<InstructionStepDeckProps> = ({
   steps,
   balloons,
   bubbles = [],
+  orientation,
   currentStepIndex,
   onSelectStep,
   onSelectBubble,
@@ -249,6 +252,7 @@ export const InstructionStepDeck: React.FC<InstructionStepDeckProps> = ({
               bubbles={bubbles}
               steps={steps}
               stepIndex={currentStepIndex}
+              orientation={orientation}
               className="h-48"
             />
           </div>

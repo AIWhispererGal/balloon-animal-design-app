@@ -9,6 +9,7 @@ import {
   Vec3,
   computeBalloonLayout,
   getStepVisibility,
+  rotateByOrientation,
 } from "@/lib/balloonLayout";
 
 interface StepVisualDiagramProps {
@@ -23,6 +24,8 @@ interface StepVisualDiagramProps {
   bubbles?: BubbleSpec[];
   steps?: StepSpec[];
   stepIndex?: number;
+  /** Whole-sculpture orientation from the design view, so the diagram is the same way up */
+  orientation?: [number, number, number];
   className?: string;
 }
 
@@ -39,14 +42,29 @@ export const StepVisualDiagram: React.FC<StepVisualDiagramProps> = ({
   bubbles,
   steps,
   stepIndex,
+  orientation,
   className = "w-full h-44",
 }) => {
   const simView = useMemo(() => {
     if (!balloons || !bubbles || !steps || stepIndex === undefined || bubbles.length === 0) {
       return null;
     }
-    const { layouts, chains, joints } = computeBalloonLayout(balloons, bubbles);
+    const sim = computeBalloonLayout(balloons, bubbles);
     const vis = getStepVisibility(steps, bubbles, balloons, stepIndex);
+    const chains = sim.chains;
+    // Turn the sculpture the way the design view shows it (flips, turns, tilts)
+    const R = (p: Vec3) => rotateByOrientation(p, orientation);
+    const layouts: BubbleLayout[] = sim.layouts.map((l) => ({
+      ...l,
+      start: R(l.start),
+      end: R(l.end),
+      mid: R(l.mid),
+      chainEnd: R(l.chainEnd),
+      chainDir: R(l.chainDir),
+      dir: R(l.dir),
+      bowOut: l.bowOut ? R(l.bowOut) : undefined,
+    }));
+    const joints = sim.joints.map((j) => ({ ...j, pos: R(j.pos) }));
 
     // Compute bounds over full sculpture + any trailing tube so framing stays steady across steps
     const pts: Array<[number, number]> = [];
@@ -141,7 +159,7 @@ export const StepVisualDiagram: React.FC<StepVisualDiagramProps> = ({
       trailingTubes,
       toSvg,
     };
-  }, [balloons, bubbles, steps, stepIndex]);
+  }, [balloons, bubbles, steps, stepIndex, orientation]);
 
   // Live 1-to-1 projection of the actual 3D step state!
   if (simView) {
