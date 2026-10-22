@@ -43,6 +43,8 @@ export interface BalloonSpec {
   order: number;
   /** Where this balloon's nozzle knot ties into an existing joint on an earlier balloon */
   attachTo?: JointAnchorRef;
+  /** Free-standing balloons only: hand-placed shift in inches [x, y, z] from the automatic spot */
+  offset?: [number, number, number];
 }
 
 export interface BubbleSpec {

@@ -197,8 +197,52 @@ export function planPacks(
   };
 }
 
+/**
+ * Packs to buy for a given number of sculptures: every line rounds up to whole
+ * packs on its own, so nothing is anchored.
+ */
+export function planForCount(recipe: Recipe, catalog: Catalog, sculpturesWanted: number): PackPlan | null {
+  const byId = new Map(catalog.items.map((i) => [i.id, i]));
+  const target = Math.max(1, Math.floor(sculpturesWanted));
+  const missingItems: string[] = [];
+  const lines: PackPlanLine[] = [];
+  recipe.lines.forEach((line) => {
+    if (line.qty <= 0) return;
+    const item = byId.get(line.itemId);
+    if (!item) {
+      missingItems.push(line.itemId);
+      return;
+    }
+    const needed = target * line.qty;
+    const packs = Math.max(1, Math.ceil(needed / item.packQty));
+    const balloons = packs * item.packQty;
+    lines.push({
+      line,
+      item,
+      packs,
+      balloons,
+      cost: round2(packs * item.price),
+      leftover: balloons - needed,
+      sculpturesSupported: Math.floor(balloons / line.qty),
+      isAnchor: false,
+    });
+  });
+  if (lines.length === 0) return null;
+  const totalCost = round2(lines.reduce((s, l) => s + l.cost, 0));
+  return {
+    anchorItemId: "",
+    anchorPacks: 0,
+    targetSculptures: target,
+    sculptures: target,
+    lines,
+    totalCost,
+    costPerSculpture: round2(totalCost / target),
+    missingItems,
+  };
+}
+
 /** Plain JSON view of a recipe with every price worked out, for export. */
-export function recipeToJson(recipe: Recipe, catalog: Catalog, plan: PackPlan | null) {
+export function recipeToJson(recipe: Recipe, catalog: Catalog, plan: PackPlan | null, forCount: PackPlan | null = null) {
   const cost = costRecipe(recipe, catalog);
   return {
     recipe: {
@@ -251,6 +295,22 @@ export function recipeToJson(recipe: Recipe, catalog: Catalog, plan: PackPlan | 
           })),
         }
       : null,
+    forSculptures: forCount
+      ? {
+          sculptures: forCount.sculptures,
+          totalCost: forCount.totalCost,
+          costPerSculpture: forCount.costPerSculpture,
+          lines: forCount.lines.map((l) => ({
+            itemId: l.item.id,
+            name: l.item.name,
+            qtyPerSculpture: l.line.qty,
+            packs: l.packs,
+            balloons: l.balloons,
+            leftover: l.leftover,
+            cost: l.cost,
+          })),
+        }
+      : null,
     catalog: {
       source: catalog.source,
       fetchedAt: catalog.fetchedAt,
@@ -280,6 +340,11 @@ export function colorFamilyOf(name: string): string | undefined {
   return undefined;
 }
 
+/** Packs of mixed colors (assortments) */
+export function isAssortedItem(i: Pick<CatalogItem, "color" | "colorFamily">): boolean {
+  return i.colorFamily === "assorted" || /assort|mixed|variety/i.test(i.color);
+}
+
 /** Best catalog match for a design balloon by size and color name; cheapest per balloon wins ties. */
 export function matchCatalogItem(
   catalog: Catalog,
@@ -288,7 +353,8 @@ export function matchCatalogItem(
 ): CatalogItem | null {
   const sizeKey = size === "360" ? /^3[56]0$/ : new RegExp(`^${size}$`);
   const fam = colorFamilyOf(colorName);
-  const candidates = catalog.items.filter((i) => sizeKey.test(i.size));
+  // Assorted/mixed packs have no single color, so they can never stand in for a design balloon
+  const candidates = catalog.items.filter((i) => sizeKey.test(i.size) && !isAssortedItem(i));
   if (candidates.length === 0) return null;
   const exact = candidates.filter((i) => i.color.toLowerCase() === colorName.toLowerCase());
   const byFamily = fam ? candidates.filter((i) => (i.colorFamily ?? colorFamilyOf(i.color)) === fam) : [];

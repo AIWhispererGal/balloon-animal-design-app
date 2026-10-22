@@ -582,6 +582,41 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                         <span className="text-slate-400">fingers · {bal.tailLengthInches ?? 4}″</span>
                       </div>
                     </div>
+                    {!bal.attachTo && idx > 0 && (
+                      <div>
+                        <label className="label">Position (free-standing)</label>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {(
+                            [
+                              ["←", [-2, 0, 0]],
+                              ["→", [2, 0, 0]],
+                              ["↑", [0, 2, 0]],
+                              ["↓", [0, -2, 0]],
+                              ["⤒ back", [0, 0, -2]],
+                              ["⤓ front", [0, 0, 2]],
+                            ] as Array<[string, [number, number, number]]>
+                          ).map(([lbl, d]) => (
+                            <button
+                              key={lbl}
+                              type="button"
+                              className="btn btn-secondary btn-xs"
+                              title={`Nudge this balloon ${lbl} by 2″`}
+                              onClick={() => {
+                                const o = bal.offset ?? [0, 0, 0];
+                                onUpdateBalloon(bal.id, { offset: [o[0] + d[0], o[1] + d[1], o[2] + d[2]] });
+                              }}
+                            >
+                              {lbl}
+                            </button>
+                          ))}
+                          {bal.offset && (
+                            <button type="button" className="btn btn-ghost btn-xs" onClick={() => onUpdateBalloon(bal.id, { offset: undefined })}>
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div>
                       <label className="label">Burp note</label>
                       <input

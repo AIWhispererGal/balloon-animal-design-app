@@ -569,6 +569,8 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
           };
 
       let dragSession: DragSession = null;
+      /** Pointer went down on a bubble body: a drag from here bends that bubble, a plain click selects it */
+      let pendingBubbleDrag: { bubbleIndex: number } | null = null;
       let downX = 0;
       let downY = 0;
 
@@ -626,10 +628,44 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
             };
             setCursorStyle("grabbing");
           }
+          return;
+        }
+
+        // Pointer down directly on a bubble: hold the orbit so a drag can bend it
+        if (!latestRef.current.splitMode && !latestRef.current.joinMode && e.button === 0) {
+          const bHit = raycaster.intersectObjects(pickMeshesRef.current, false).find((h) => h.object.userData.bubbleIndex !== undefined);
+          if (bHit) {
+            pendingBubbleDrag = { bubbleIndex: bHit.object.userData.bubbleIndex as number };
+            controls.enabled = false;
+          }
         }
       };
 
       const onPointerMove = (e: PointerEvent) => {
+        if (pendingBubbleDrag && !dragSession && Math.hypot(e.clientX - downX, e.clientY - downY) > 6) {
+          const bIdx = pendingBubbleDrag.bubbleIndex;
+          const b = latestRef.current.bubbles[bIdx];
+          pendingBubbleDrag = null;
+          if (b) {
+            renderer.domElement.setPointerCapture(e.pointerId);
+            dragSession = {
+              mode: "bend",
+              bubbleIndex: bIdx,
+              startClientX: downX,
+              startClientY: downY,
+              startWorld: new THREE.Vector3(),
+              axisWorld: new THREE.Vector3(1, 0, 0),
+              perpWorld: new THREE.Vector3(0, 0, 1),
+              initialLength: b.lengthInches,
+              initialDiameter: b.diameterInches || 2.0,
+              initialBend: b.bend ?? 0,
+              initialTurn: b.turn ?? 0,
+              lastApplied: "",
+            };
+            if (latestRef.current.selectedBubbleIndex !== bIdx) latestRef.current.onSelectBubble?.(bIdx, false);
+            setCursorStyle("grabbing");
+          }
+        }
         if (dragSession) {
           setNdc(e.clientX, e.clientY);
           const b = latestRef.current.bubbles[dragSession.bubbleIndex];
@@ -706,6 +742,10 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       };
 
       const onPointerUp = (e: PointerEvent) => {
+        if (pendingBubbleDrag) {
+          pendingBubbleDrag = null;
+          controls.enabled = true;
+        }
         if (dragSession) {
           dragSession = null;
           controls.enabled = true;
@@ -1079,9 +1119,10 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         if (l.foldBridgeTo && l.partnerIndex !== undefined && vis.formed.has(l.partnerIndex)) {
           const pA = tv(l.end);
           const pB = tv(l.foldBridgeTo);
-          const apex = pA.clone().lerp(pB, 0.5).addScaledVector(tv(l.dir), l.radiusUnits * 0.62);
+          // The fold is a twist: the two bubble ends meet at a pinched seam, not a third bubble
+          const seam = tv(l.jointEnd);
           const bridgeMesh = new THREE.Mesh(
-            new THREE.TubeGeometry(new THREE.CatmullRomCurve3([pA, apex, pB]), 16, l.radiusUnits * 0.82, 14, false),
+            new THREE.TubeGeometry(new THREE.CatmullRomCurve3([pA, seam, pB]), 12, l.radiusUnits * 0.2, 10, false),
             mat
           );
           registerBubbleMesh(l.index, bridgeMesh);

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   BookOpen,
   Camera,
@@ -75,18 +75,31 @@ import {
   makeProject,
   readProjectFile,
   saveProject,
+  EditorSession,
+  loadEditorSession,
+  saveEditorSession,
 } from "@/lib/designStorage";
 import { AddBalloonRequest } from "@/components/AddBalloonPopover";
 import { setCurrentDesign, setRecipeHandoff } from "@/lib/recipeStorage";
 
+const subscribeNoop = () => () => {};
+
+/** The editor reads its last session from the browser, so it renders only after mount. */
 export default function BalloonAppPage() {
+  const mounted = useSyncExternalStore(subscribeNoop, () => true, () => false);
+  if (!mounted) return <div className="min-h-screen" />;
+  return <BalloonEditor />;
+}
+
+function BalloonEditor() {
   const router = useRouter();
+  const [session] = useState<EditorSession | null>(loadEditorSession);
   const [designTierMap, setDesignTierMap] = useState<Record<ComplexityLevel, FullDesign>>(
-    PRESET_DESIGNS.dog
+    () => session?.tiers ?? PRESET_DESIGNS.dog
   );
-  const [activeComplexity, setActiveComplexity] = useState<ComplexityLevel>("beginner");
+  const [activeComplexity, setActiveComplexity] = useState<ComplexityLevel>(() => session?.activeComplexity ?? "beginner");
   const [currentStepIndex, setCurrentStepIndex] = useState(
-    () => PRESET_DESIGNS.dog.beginner.steps.length - 1
+    () => Math.max(0, (session?.tiers ?? PRESET_DESIGNS.dog)[session?.activeComplexity ?? "beginner"].steps.length - 1)
   );
   /** Ordered multi-selection; the last entry is the primary (inspected) bubble */
   const [selectedIndices, setSelectedIndices] = useState<number[]>([0]);
@@ -104,7 +117,7 @@ export default function BalloonAppPage() {
 
   const [isNewDesignOpen, setIsNewDesignOpen] = useState(false);
   /** Identity of the saved project this session was opened from (null = unsaved) */
-  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(() => session?.projectId ?? null);
   const [savedProjects, setSavedProjects] = useState<SavedProjectSummary[]>([]);
   const [isEncyclopediaOpen, setIsEncyclopediaOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -763,6 +776,11 @@ export default function BalloonAppPage() {
     },
     [activeComplexity]
   );
+
+  // Remember the open design (all tiers, orientation included) across navigation and reloads
+  useEffect(() => {
+    saveEditorSession({ tiers: designTierMap, activeComplexity, projectId });
+  }, [designTierMap, activeComplexity, projectId]);
 
   // Keep the shopping page's "current design" recipe in sync with what is open here
   useEffect(() => {

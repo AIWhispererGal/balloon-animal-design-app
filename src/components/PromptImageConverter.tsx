@@ -1,8 +1,11 @@
 "use client";
 
 import React, { useRef, useState } from "react";
+import { ChevronDown, ChevronUp, KeyRound, Sparkles } from "lucide-react";
 import { ComplexityLevel, FullDesign } from "@/types/balloon";
 import { findOrGenerateDesigns } from "@/lib/balloonPresets";
+import { generateDesignsWithClaude } from "@/lib/aiDesigner";
+import { AI_MODELS, AiSettings, getAiSettings, setAiSettings } from "@/lib/aiSettings";
 
 interface PromptImageConverterProps {
   onDesignsGenerated: (
@@ -14,26 +17,25 @@ interface PromptImageConverterProps {
   isLoading?: boolean;
 }
 
-interface ImageAnalysis {
+interface ImageInfo {
+  /** JPEG data URL, longest side at most 1024px */
+  previewUrl: string;
   colors: string[];
-  silhouette: string;
-  archetypeHint: string;
   width: number;
   height: number;
-  foregroundRatio: number;
 }
 
 const SAMPLE_INSPIRATIONS = [
-  { label: "Classic Dog / Puppy", query: "dog", icon: "🐶" },
-  { label: "Pirate Cutlass Sword", query: "sword", icon: "⚔️" },
-  { label: "Spring Daisy Flower", query: "flower", icon: "🌸" },
-  { label: "Teddy Bear", query: "teddy bear", icon: "🧸" },
-  { label: "T-Rex Dinosaur", query: "dinosaur t-rex", icon: "🦖" },
-  { label: "Fairy Butterfly", query: "butterfly wings", icon: "🦋" },
-  { label: "Swan / Flamingo", query: "swan flamingo", icon: "🦩" },
-  { label: "Magic Cosmic Wand", query: "magic wand star", icon: "🪄" },
-  { label: "Unicorn with Spiral Horn", query: "unicorn spiral horn", icon: "🦄" },
-  { label: "Alien with Antenna", query: "alien octopus antenna", icon: "👾" },
+  { label: "Classic Dog / Puppy", query: "dog" },
+  { label: "Pirate Cutlass Sword", query: "sword" },
+  { label: "Spring Daisy Flower", query: "flower" },
+  { label: "Teddy Bear", query: "teddy bear" },
+  { label: "T-Rex Dinosaur", query: "dinosaur t-rex" },
+  { label: "Fairy Butterfly", query: "butterfly wings" },
+  { label: "Swan / Flamingo", query: "swan flamingo" },
+  { label: "Magic Cosmic Wand", query: "magic wand star" },
+  { label: "Unicorn with Spiral Horn", query: "unicorn spiral horn" },
+  { label: "Alien with Antenna", query: "alien octopus antenna" },
 ];
 
 const rgbDistance = (a: [number, number, number], b: [number, number, number]) =>
@@ -63,206 +65,73 @@ async function decodeFile(file: File): Promise<HTMLImageElement> {
     });
     return image;
   } finally {
-    // The decoded bitmap remains available after revoking the source object URL.
     URL.revokeObjectURL(url);
   }
 }
 
-function analyzeImage(image: HTMLImageElement): { analysis: ImageAnalysis; previewUrl: string } {
-  const sampleSize = 112;
+/**
+ * Downscale the reference for the model and pull a few dominant subject colors
+ * for the no-key fallback. The background is sampled from the picture's own
+ * corners (not the letterbox), so a white studio backdrop is not read as the subject.
+ */
+function prepareImage(image: HTMLImageElement): ImageInfo {
+  const maxSide = 1024;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const w = Math.max(1, Math.round(image.naturalWidth * scale));
+  const h = Math.max(1, Math.round(image.naturalHeight * scale));
   const canvas = document.createElement("canvas");
-  canvas.width = sampleSize;
-  canvas.height = sampleSize;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("Canvas image analysis is unavailable in this browser.");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Canvas image processing is unavailable in this browser.");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(image, 0, 0, w, h);
+  const previewUrl = canvas.toDataURL("image/jpeg", 0.88);
 
-  context.clearRect(0, 0, sampleSize, sampleSize);
-  const scale = Math.min(sampleSize / image.naturalWidth, sampleSize / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  const offsetX = (sampleSize - drawWidth) / 2;
-  const offsetY = (sampleSize - drawHeight) / 2;
-  context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
-  const pixels = context.getImageData(0, 0, sampleSize, sampleSize).data;
-
-  const readPixel = (x: number, y: number): [number, number, number] => {
-    const index = (Math.max(0, Math.min(sampleSize - 1, y)) * sampleSize + Math.max(0, Math.min(sampleSize - 1, x))) * 4;
-    return [pixels[index], pixels[index + 1], pixels[index + 2]];
+  // color sampling on a small copy
+  const s = 96;
+  const small = document.createElement("canvas");
+  small.width = s;
+  small.height = s;
+  const sctx = small.getContext("2d", { willReadFrequently: true })!;
+  sctx.drawImage(canvas, 0, 0, s, s);
+  const px = sctx.getImageData(0, 0, s, s).data;
+  const at = (x: number, y: number): [number, number, number] => {
+    const i = (y * s + x) * 4;
+    return [px[i], px[i + 1], px[i + 2]];
   };
-  const corners = [
-    readPixel(2, 2),
-    readPixel(sampleSize - 3, 2),
-    readPixel(2, sampleSize - 3),
-    readPixel(sampleSize - 3, sampleSize - 3),
-  ];
-  const background: [number, number, number] = [
-    Math.round(corners.reduce((sum, color) => sum + color[0], 0) / corners.length),
-    Math.round(corners.reduce((sum, color) => sum + color[1], 0) / corners.length),
-    Math.round(corners.reduce((sum, color) => sum + color[2], 0) / corners.length),
-  ];
+  const corners = [at(1, 1), at(s - 2, 1), at(1, s - 2), at(s - 2, s - 2), at(Math.floor(s / 2), 1), at(Math.floor(s / 2), s - 2)];
+  const background: [number, number, number] = [0, 1, 2].map(
+    (c) => Math.round(corners.reduce((sum, col) => sum + col[c], 0) / corners.length)
+  ) as [number, number, number];
 
   const buckets = new Map<string, { count: number; sum: [number, number, number] }>();
-  let minX = sampleSize;
-  let minY = sampleSize;
-  let maxX = 0;
-  let maxY = 0;
-  let foregroundPixels = 0;
-
-  for (let y = 0; y < sampleSize; y += 1) {
-    for (let x = 0; x < sampleSize; x += 1) {
-      const index = (y * sampleSize + x) * 4;
-      if (pixels[index + 3] < 80) continue;
-      const rgb: [number, number, number] = [pixels[index], pixels[index + 1], pixels[index + 2]];
-      const saturation = Math.max(...rgb) - Math.min(...rgb);
-      const isForeground = rgbDistance(rgb, background) > Math.max(34, saturation * 0.38);
-      if (!isForeground) continue;
-
-      foregroundPixels += 1;
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-
-      const quantized: [number, number, number] = [
-        Math.round(rgb[0] / 28) * 28,
-        Math.round(rgb[1] / 28) * 28,
-        Math.round(rgb[2] / 28) * 28,
-      ];
-      const key = quantized.join(",");
-      const bucket = buckets.get(key) ?? { count: 0, sum: [0, 0, 0] as [number, number, number] };
-      bucket.count += 1;
-      bucket.sum[0] += rgb[0];
-      bucket.sum[1] += rgb[1];
-      bucket.sum[2] += rgb[2];
-      buckets.set(key, bucket);
+  for (let y = 0; y < s; y++) {
+    for (let x = 0; x < s; x++) {
+      const rgb = at(x, y);
+      if (rgbDistance(rgb, background) < 48) continue;
+      const sat = Math.max(...rgb) - Math.min(...rgb);
+      const lum = (rgb[0] + rgb[1] + rgb[2]) / 3;
+      if (sat < 24 && (lum < 40 || lum > 215)) continue; // shadows and highlights are not latex colors
+      const key = rgb.map((v) => Math.round(v / 32)).join(",");
+      const b = buckets.get(key) ?? { count: 0, sum: [0, 0, 0] as [number, number, number] };
+      b.count += 1;
+      b.sum[0] += rgb[0];
+      b.sum[1] += rgb[1];
+      b.sum[2] += rgb[2];
+      buckets.set(key, b);
     }
   }
-
   const ranked = [...buckets.values()]
     .sort((a, b) => b.count - a.count)
-    .map((bucket): [number, number, number] => [
-      Math.round(bucket.sum[0] / bucket.count),
-      Math.round(bucket.sum[1] / bucket.count),
-      Math.round(bucket.sum[2] / bucket.count),
-    ]);
+    .map((b): [number, number, number] => [Math.round(b.sum[0] / b.count), Math.round(b.sum[1] / b.count), Math.round(b.sum[2] / b.count)]);
   const distinct: Array<[number, number, number]> = [];
-  for (const color of ranked) {
-    if (distinct.every((existing) => rgbDistance(existing, color) > 58)) distinct.push(color);
+  for (const c of ranked) {
+    if (distinct.every((d) => rgbDistance(d, c) > 60)) distinct.push(c);
     if (distinct.length === 4) break;
   }
-  if (distinct.length === 0) distinct.push([225, 29, 72]);
-
-  const foregroundWidth = Math.max(1, maxX - minX + 1);
-  const foregroundHeight = Math.max(1, maxY - minY + 1);
-  const aspect = foregroundWidth / foregroundHeight;
-  const fill = foregroundPixels / (foregroundWidth * foregroundHeight);
-
-  // Shape feature extraction for balloon archetype mapping
-  // Extract edge density and contour information
-  let edgeDensity = 0;
-  let contourScore = 0;
-  let hasDiagonalStructure = false;
-  let hasVerticalStructure = false;
-  let hasHorizontalStructure = false;
-
-  // Sample edge density from the foreground bounding box
-  const edgeSample = 64;
-  const edgeCanvas = document.createElement("canvas");
-  edgeCanvas.width = edgeSample;
-  edgeCanvas.height = edgeSample;
-  const edgeCtx = edgeCanvas.getContext("2d", { willReadFrequently: true });
-  if (edgeCtx) {
-    edgeCtx.drawImage(image, 0, 0, edgeSample, edgeSample);
-    const edgeData = edgeCtx.getImageData(0, 0, edgeSample, edgeSample).data;
-    const edgePixels = [];
-    for (let y = 0; y < edgeSample; y++) {
-      for (let x = 0; x < edgeSample; x++) {
-        const idx = (y * edgeSample + x) * 4;
-        if (edgeData[idx + 3] < 80) continue;
-        // Simple edge detection: check if pixel differs from neighbors
-        const idxRight = (y * edgeSample + Math.min(edgeSample - 1, x + 1)) * 4;
-        const idxBelow = (Math.min(edgeSample - 1, y + 1) * edgeSample + x) * 4;
-        const diffR = Math.abs(edgeData[idx] - edgeData[idxRight]);
-        const diffB = Math.abs(edgeData[idx] - edgeData[idxBelow]);
-        if (diffR > 30 || diffB > 30) edgePixels.push([x, y]);
-      }
-    }
-    edgeDensity = edgePixels.length / (edgeSample * edgeSample);
-    contourScore = Math.min(1, edgeDensity * 4);
-
-    // Check for structural directions
-    const midX = edgeSample / 2;
-    const midY = edgeSample / 2;
-    let diagonalCount = 0;
-    let verticalCount = 0;
-    let horizontalCount = 0;
-    for (const [px, py] of edgePixels) {
-      const dx = px - midX;
-      const dy = py - midY;
-      if (Math.abs(dx) > Math.abs(dy) * 2) horizontalCount++;
-      if (Math.abs(dy) > Math.abs(dx) * 2) verticalCount++;
-      if (Math.abs(Math.abs(dx) - Math.abs(dy)) < Math.max(Math.abs(dx), Math.abs(dy)) * 0.3) diagonalCount++;
-    }
-    hasDiagonalStructure = diagonalCount > edgePixels.length * 0.3;
-    hasVerticalStructure = verticalCount > edgePixels.length * 0.35;
-    hasHorizontalStructure = horizontalCount > edgePixels.length * 0.35;
-  }
-
-  // Map shape features to balloon archetype
-  let silhouette = "compact character or object";
-  let archetypeHint = "quadruped";
-  if (aspect > 1.75) {
-    silhouette = "wide winged or long horizontal object";
-    if (hasDiagonalStructure) archetypeHint = "winged";
-    else archetypeHint = "wand";
-  } else if (aspect < 0.48) {
-    silhouette = "tall narrow wand, stem, sword, or upright character";
-    archetypeHint = "wand";
-  } else if (fill < 0.38) {
-    silhouette = "branched figure with limbs, wings, or open spaces";
-    if (hasDiagonalStructure) archetypeHint = "radial";
-    else archetypeHint = "winged";
-  } else if (fill > 0.72) {
-    silhouette = "rounded compact figure";
-    archetypeHint = "quadruped";
-  } else if (contourScore > 0.4) {
-    silhouette = "detailed figure with clear contours";
-    archetypeHint = "radial";
-  } else {
-    silhouette = "balanced creature or object";
-    archetypeHint = "quadruped";
-  }
-
-  // Add archetype hint to the analysis for use in generation
-  const archetypeMap: Record<string, string> = {
-    winged: "winged creature with wings",
-    wand: "tall staff or wand with appendages",
-    radial: "radial creature with tentacles or limbs",
-    quadruped: "quadrupedal animal with four limbs",
-  };
-  const finalHint = archetypeMap[archetypeHint] || "generic object";
-
-  // Use a bounded JPEG preview instead of retaining an arbitrarily huge original data URL.
-  const previewCanvas = document.createElement("canvas");
-  const maxPreview = 900;
-  const previewScale = Math.min(1, maxPreview / Math.max(image.naturalWidth, image.naturalHeight));
-  previewCanvas.width = Math.max(1, Math.round(image.naturalWidth * previewScale));
-  previewCanvas.height = Math.max(1, Math.round(image.naturalHeight * previewScale));
-  const previewContext = previewCanvas.getContext("2d");
-  if (!previewContext) throw new Error("Could not create an image preview.");
-  previewContext.drawImage(image, 0, 0, previewCanvas.width, previewCanvas.height);
-
-  return {
-    previewUrl: previewCanvas.toDataURL("image/jpeg", 0.86),
-    analysis: {
-      colors: distinct.map(toHex),
-      silhouette,
-      archetypeHint: finalHint,
-      width: image.naturalWidth,
-      height: image.naturalHeight,
-      foregroundRatio: Math.round((foregroundPixels / (sampleSize * sampleSize)) * 100),
-    },
-  };
+  return { previewUrl, colors: distinct.map(toHex), width: image.naturalWidth, height: image.naturalHeight };
 }
 
 export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
@@ -271,49 +140,69 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
   isLoading = false,
 }) => {
   const [prompt, setPrompt] = useState("");
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [image, setImage] = useState<ImageInfo | null>(null);
   const [selectedFileName, setSelectedFileName] = useState("");
-  const [analysis, setAnalysis] = useState<ImageAnalysis | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [status, setStatus] = useState("Describe an item, upload a reference, or use both.");
+  const [status, setStatus] = useState("Describe an item, drop a reference photo, or both.");
   const [error, setError] = useState<string | null>(null);
+  const [ai, setAi] = useState<AiSettings>(getAiSettings);
+  const [settingsOpen, setSettingsOpen] = useState(() => !getAiSettings().apiKey);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hasKey = ai.apiKey.trim().length > 0;
 
-  const generate = (
-    promptOverride?: string,
-    analysisOverride?: ImageAnalysis | null,
-    imageOverride?: string | null
-  ) => {
-    const visual = analysisOverride ?? analysis;
+  const updateAi = (patch: Partial<AiSettings>) => {
+    const next = { ...ai, ...patch };
+    setAi(next);
+    setAiSettings(next);
+  };
+
+  const generate = async (promptOverride?: string, imageOverride?: ImageInfo | null) => {
+    const img = imageOverride === undefined ? image : imageOverride;
+    const typed = (promptOverride ?? prompt).trim();
     const fileHint = cleanFileName(selectedFileName);
-    const typedHint = (promptOverride ?? prompt).trim();
-    const effectivePrompt = typedHint || fileHint || visual?.silhouette || "uploaded reference object";
-    const sourceLabel = visual
-      ? `${effectivePrompt} — reference image (${visual.silhouette})`
-      : effectivePrompt;
-    // Use archetype hint as the primary shape descriptor for generation
-    const shapePrompt = visual?.archetypeHint || effectivePrompt;
-
+    const effectivePrompt = typed || fileHint;
+    if (!effectivePrompt && !img) {
+      setError("Type what to make, or drop a reference image.");
+      return;
+    }
     setIsProcessing(true);
     setError(null);
-    setStatus(visual ? "Building three balloon tiers from the analyzed reference…" : "Building three balloon tiers…");
-    window.setTimeout(() => {
-      try {
-        const results = findOrGenerateDesigns(shapePrompt, visual?.colors);
-        onDesignsGenerated(results, sourceLabel, imageOverride ?? selectedImage ?? undefined);
+    try {
+      if (hasKey) {
+        const modelLabel = AI_MODELS.find((m) => m.id === ai.model)?.label ?? ai.model;
+        setStatus(img ? `${modelLabel} is studying the photo and designing three tiers…` : `${modelLabel} is designing three tiers…`);
+        const result = await generateDesignsWithClaude({
+          apiKey: ai.apiKey,
+          model: ai.model,
+          prompt: effectivePrompt,
+          imageBase64: img ? img.previewUrl.split(",")[1] : undefined,
+          imageMediaType: "image/jpeg",
+        });
+        const label = result.subject || effectivePrompt;
+        onDesignsGenerated(result.designs, label, img?.previewUrl);
         setStatus(
-          visual
-            ? `Generated from image: ${visual.width}×${visual.height}, ${visual.silhouette}, ${visual.colors.length} latex color candidates.`
-            : `Generated three adjustable tiers for “${effectivePrompt}”.`
+          `Designed “${label}” with ${modelLabel} (${result.usage.input + result.usage.output} tokens).` +
+            (result.warnings.length ? ` ${result.warnings.join(" ")}` : "")
         );
-      } catch (generationError) {
-        setError(generationError instanceof Error ? generationError.message : "Reference generation failed.");
-        setStatus("Generation failed. Try another image or add a short description.");
-      } finally {
-        setIsProcessing(false);
+      } else {
+        setStatus("Building three tiers from the built-in templates…");
+        await new Promise((r) => setTimeout(r, 40));
+        const results = findOrGenerateDesigns(effectivePrompt || "custom sculpture", img?.colors);
+        onDesignsGenerated(results, effectivePrompt || "reference image", img?.previewUrl);
+        setStatus(
+          img
+            ? "Used a template with the photo's colors. Add an API key below and the model will design from what is actually in the photo."
+            : `Generated template tiers for “${effectivePrompt}”. Add an API key below for designs tailored to your description.`
+        );
       }
-    }, 80);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Generation failed.";
+      setError(/401|authentication|invalid x-api-key/i.test(msg) ? "That API key was rejected. Check it and try again." : msg);
+      setStatus("Generation failed.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const processImageFile = async (file: File) => {
@@ -325,24 +214,21 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
       setError("Please use an image smaller than 18 MB.");
       return;
     }
-
     setIsProcessing(true);
     setError(null);
     setStatus(`Reading ${file.name}…`);
     setSelectedFileName(file.name);
     try {
       const decoded = await decodeFile(file);
-      setStatus("Analyzing silhouette and extracting usable latex colors…");
-      const result = analyzeImage(decoded);
-      setSelectedImage(result.previewUrl);
-      setAnalysis(result.analysis);
+      const info = prepareImage(decoded);
+      setImage(info);
       const fileHint = cleanFileName(file.name);
       if (!prompt.trim() && fileHint) setPrompt(fileHint);
-      // Image upload is a complete input mode: generate immediately after successful analysis.
-      generate(prompt.trim() || fileHint || result.analysis.silhouette, result.analysis, result.previewUrl);
+      setIsProcessing(false);
+      await generate(prompt.trim() || fileHint, info);
     } catch (imageError) {
-      setError(imageError instanceof Error ? imageError.message : "The image could not be analyzed.");
-      setStatus("Image analysis failed. Please try a different file.");
+      setError(imageError instanceof Error ? imageError.message : "The image could not be read.");
+      setStatus("Image could not be read. Please try a different file.");
       setIsProcessing(false);
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -355,8 +241,8 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
         <div>
           <h2 className="text-lg font-semibold text-white">New design</h2>
           <p className="mt-1 text-xs text-slate-400">
-            Describe an item or drop a reference image to generate beginner, intermediate and advanced
-            versions. Or start from an empty balloon and sculpt by hand.
+            Describe an item or drop a reference photo to get beginner, intermediate and advanced versions. Or start
+            from an empty balloon and sculpt by hand.
           </p>
         </div>
         <button onClick={onStartBlankSlate} className="btn btn-secondary self-start md:self-auto">
@@ -370,18 +256,18 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
           <div className="relative">
             <input
               type="text"
-              placeholder="Optional with an image — e.g. red race car, dachshund, orchid, astronaut…"
+              placeholder="e.g. dachshund with a red collar, race car, orchid, astronaut…"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && !isProcessing && generate()}
+              onKeyDown={(event) => event.key === "Enter" && !isProcessing && void generate()}
               className="input py-2.5 pr-28"
             />
             <button
-              onClick={() => generate()}
+              onClick={() => void generate()}
               disabled={isProcessing || isLoading}
               className="btn btn-primary absolute bottom-1.5 right-1.5 top-1.5 px-4"
             >
-              {isProcessing ? "Analyzing…" : selectedImage ? "Regenerate" : "Generate"}
+              {isProcessing ? "Working…" : image ? "Regenerate" : "Generate"}
             </button>
           </div>
         </div>
@@ -408,7 +294,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
             className={`flex min-h-20 cursor-pointer items-center gap-3 rounded-xl border border-dashed px-3 py-2 transition ${
               isDragging
                 ? "border-emerald-400 bg-emerald-500/10"
-                : selectedImage
+                : image
                 ? "border-amber-500/60 bg-slate-950"
                 : "border-slate-700 bg-slate-950/60 hover:border-amber-500"
             }`}
@@ -424,37 +310,36 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
                 if (file) void processImageFile(file);
               }}
             />
-            {selectedImage ? (
+            {image ? (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={selectedImage}
+                  src={image.previewUrl}
                   alt="Uploaded reference"
                   className="h-14 w-14 shrink-0 rounded-lg border border-amber-500 object-cover"
                 />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-xs font-bold text-amber-300">{selectedFileName}</div>
                   <div className="mt-0.5 text-[11px] leading-snug text-slate-400">
-                    {analysis?.silhouette ?? "Analyzing reference…"}
+                    {image.width}×{image.height}
+                    {hasKey ? " · sent to the model with your description" : " · template colors only (no API key)"}
                   </div>
                   <div className="mt-1 flex items-center gap-1">
-                    {analysis?.colors.map((color) => (
+                    {image.colors.map((color) => (
                       <span
                         key={color}
                         className="h-3.5 w-3.5 rounded-full border border-white/30"
                         style={{ backgroundColor: color }}
-                        title={`Candidate balloon color ${color}`}
+                        title={`Subject color ${color}`}
                       />
                     ))}
-                    <span className="ml-1 text-[11px] text-slate-500">one color per balloon</span>
                   </div>
                 </div>
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
-                    setSelectedImage(null);
+                    setImage(null);
                     setSelectedFileName("");
-                    setAnalysis(null);
                     setStatus("Reference cleared. Describe an item or upload another image.");
                   }}
                   className="btn btn-ghost btn-xs"
@@ -485,6 +370,75 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
         {error ?? status}
       </div>
 
+      {/* AI engine settings */}
+      <div className="rounded-xl border border-slate-800 bg-slate-950/60">
+        <button
+          type="button"
+          onClick={() => setSettingsOpen((o) => !o)}
+          className="flex w-full items-center justify-between px-3 py-2 text-left text-xs"
+        >
+          <span className="flex items-center gap-2">
+            <Sparkles className={`h-3.5 w-3.5 ${hasKey ? "text-amber-300" : "text-slate-500"}`} />
+            <span className="font-semibold text-slate-200">AI design engine</span>
+            <span className={`chip ${hasKey ? "chip-accent" : ""}`}>
+              {hasKey ? AI_MODELS.find((m) => m.id === ai.model)?.label ?? ai.model : "off · templates only"}
+            </span>
+          </span>
+          {settingsOpen ? <ChevronUp className="h-3.5 w-3.5 text-slate-500" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-500" />}
+        </button>
+        {settingsOpen && (
+          <div className="space-y-3 border-t border-slate-800 px-3 py-3">
+            <p className="text-[11px] leading-snug text-slate-400">
+              With an Anthropic API key, the model looks at your photo and description and designs real bubble
+              sequences in the app&apos;s schema. The key is stored only in this browser and sent straight to the
+              Claude API from here. You pay per generation on your own account.
+            </p>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-12">
+              <label className="md:col-span-7">
+                <span className="label">API key</span>
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="password"
+                    value={ai.apiKey}
+                    onChange={(e) => updateAi({ apiKey: e.target.value })}
+                    placeholder="sk-ant-…"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="input input-sm pl-8 font-mono"
+                  />
+                </div>
+              </label>
+              <label className="md:col-span-5">
+                <span className="label">Model</span>
+                <select value={ai.model} onChange={(e) => updateAi({ model: e.target.value })} className="select w-full">
+                  {AI_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-1 text-[11px] text-slate-500">{AI_MODELS.find((m) => m.id === ai.model)?.note}</div>
+              </label>
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                Get a key at{" "}
+                <a href="https://platform.claude.com/" target="_blank" rel="noreferrer" className="text-amber-300 underline">
+                  platform.claude.com
+                </a>
+                .
+              </span>
+              {hasKey && (
+                <button type="button" onClick={() => updateAi({ apiKey: "" })} className="btn btn-ghost btn-xs">
+                  Forget key
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       <div>
         <div className="label">Quick examples</div>
         <div className="flex flex-wrap gap-2">
@@ -493,7 +447,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
               key={item.query}
               onClick={() => {
                 setPrompt(item.query);
-                generate(item.query, null, null);
+                void generate(item.query, null);
               }}
               disabled={isProcessing}
               className="btn btn-secondary"

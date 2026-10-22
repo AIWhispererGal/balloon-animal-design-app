@@ -2,7 +2,7 @@ import { BalloonSpec, BubbleSpec, ComplexityLevel, FullDesign } from "@/types/ba
 import { generateStepsFromSimulation } from "./stepGenerator";
 import { fitTailForBubbles } from "./balloonAir";
 
-function buildDesign(params: {
+export function buildDesign(params: {
   id: string;
   title: string;
   description: string;
@@ -785,13 +785,13 @@ export function findOrGenerateDesigns(
 ): Record<"beginner" | "intermediate" | "advanced", FullDesign> {
   const normalized = queryOrPreset.toLowerCase().trim();
 
-  if (/\b(dog|puppy|poodle|dachshund|wiener)\b/.test(normalized) && !detectedColors?.length) {
+  if (/\b(dog|puppy|poodle|dachshund|wiener)\b/.test(normalized)) {
     return PRESET_DESIGNS.dog;
   }
-  if (/\b(sword|saber|blade|cutlass|claymore|excalibur)\b/.test(normalized) && !detectedColors?.length) {
+  if (/\b(sword|saber|blade|cutlass|claymore|excalibur)\b/.test(normalized)) {
     return PRESET_DESIGNS.sword;
   }
-  if (/\b(flower|rose|daisy|orchid|tulip)\b/.test(normalized) && !detectedColors?.length) {
+  if (/\b(flower|rose|daisy|orchid|tulip)\b/.test(normalized)) {
     return PRESET_DESIGNS.flower;
   }
 

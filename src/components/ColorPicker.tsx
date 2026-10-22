@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Palette, ShoppingCart } from "lucide-react";
 import { TWISTER_COLORS } from "@/lib/balloonConstants";
 import catalogJson from "@/data/balloonCatalog.json";
-import { Catalog, CatalogItem } from "@/lib/recipeMath";
+import { Catalog, CatalogItem, isAssortedItem } from "@/lib/recipeMath";
 
 const catalog = catalogJson as Catalog;
 
@@ -78,7 +78,7 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
   }, [open]);
 
   const sizeItems = useMemo(
-    () => (balloonSize ? catalog.items.filter((i) => sizeMatches(i.size, balloonSize)) : []),
+    () => (balloonSize ? catalog.items.filter((i) => sizeMatches(i.size, balloonSize) && !isAssortedItem(i)) : []),
     [balloonSize]
   );
   const brands = useMemo(() => Array.from(new Set(sizeItems.map((i) => i.brand))).sort(), [sizeItems]);

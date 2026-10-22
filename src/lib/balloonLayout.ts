@@ -245,13 +245,49 @@ export function computeBalloonLayout(
   const cursors = new Map<string, ChainCursor>();
   let primaryCursor: ChainCursor | null = null;
   let primaryStart: Vec3 = [0, 0, 0];
-  // Free-standing balloons (no tie-in joint) are laid side by side under the first one
-  let freeStandingCount = 0;
-  const freeStandingOffset = (radiusUnits: number): Vec3 => {
-    freeStandingCount += 1;
-    return [0, -(radiusUnits * 2.6 + 0.35) * freeStandingCount, 0];
-  };
   const rawLayouts: BubbleLayout[] = new Array(bubbles.length);
+  // Free-standing balloons (no tie-in joint) are stacked under everything laid out so far,
+  // each one spaced by its own real extent so legs and loops never overlap the neighbour.
+  let freeStandingFloor: number | null = null;
+  const laidOutMinY = (): number => {
+    let minY = Infinity;
+    rawLayouts.forEach((l) => {
+      if (!l) return;
+      minY = Math.min(minY, l.start[1] - l.radiusUnits, l.end[1] - l.radiusUnits, l.mid[1] - l.radiusUnits);
+    });
+    chains.forEach((c) => {
+      minY = Math.min(minY, c.startPos[1] - c.radiusUnits);
+    });
+    return Number.isFinite(minY) ? minY : 0;
+  };
+  const freeStandingOffset = (bal: BalloonSpec | undefined, radiusUnits: number): Vec3 => {
+    // Height of this balloon above its own start, from a private layout of just its bubbles
+    let riseAbove = radiusUnits;
+    let span = radiusUnits * 2;
+    if (bal && !options.__noLookAhead) {
+      const own = bubbles.filter((b) => b.balloonId === bal.id).map((b) => ({ ...b, lockToJoint: undefined, branchFrom: undefined }));
+      if (own.length > 0) {
+        const sub = computeBalloonLayout([{ ...bal, attachTo: undefined, offset: undefined }], own, { __noLookAhead: true });
+        const start = sub.chains.get(bal.id)?.startPos ?? [0, 0, 0];
+        let maxY = -Infinity;
+        let minY = Infinity;
+        sub.layouts.forEach((l) => {
+          maxY = Math.max(maxY, l.start[1] + l.radiusUnits, l.end[1] + l.radiusUnits, l.mid[1] + l.radiusUnits);
+          minY = Math.min(minY, l.start[1] - l.radiusUnits, l.end[1] - l.radiusUnits, l.mid[1] - l.radiusUnits);
+        });
+        if (Number.isFinite(maxY)) {
+          riseAbove = maxY - start[1];
+          span = maxY - minY;
+        }
+      }
+    }
+    const floor = freeStandingFloor ?? laidOutMinY();
+    const gap = 0.6;
+    const y = floor - gap - riseAbove;
+    freeStandingFloor = y - (span - riseAbove);
+    const user = bal?.offset ? vScale(bal.offset, UNIT) : ([0, 0, 0] as Vec3);
+    return vAdd([0, y - primaryStart[1], 0], user);
+  };
 
   // Pre-scan per-balloon sequences so multi-bubble structures (2-bubble lock pair,
   // 3-bubble bird body, multi-petal loop rosettes, double pinches) know their exact peers!
@@ -339,7 +375,7 @@ export function computeBalloonLayout(
     if (anchor) {
       pos = anchor.pos;
     } else if (primaryCursor) {
-      pos = vAdd(primaryStart, freeStandingOffset(radiusForDiameter(defaultDiameterForSize(bal?.size))));
+      pos = vAdd(primaryStart, freeStandingOffset(bal, radiusForDiameter(defaultDiameterForSize(bal?.size))));
       // A free-standing balloon with a joint twisted into another balloon is
       // moved as a whole so that joint lands on its partner without stretching.
       const own = indicesByBalloon.get(b.balloonId) ?? [];
@@ -1096,7 +1132,7 @@ export function computeBalloonLayout(
     const pos: Vec3 = anchor
       ? anchor.pos
       : primaryCursor
-      ? vAdd(primaryStart, freeStandingOffset(radiusUnits))
+      ? vAdd(primaryStart, freeStandingOffset(bal, radiusUnits))
       : [0, 0, 0];
     const dir: Vec3 = anchor ? [0, 1, 0] : [1, 0, 0];
     if (!primaryCursor) primaryStart = [...pos] as Vec3;

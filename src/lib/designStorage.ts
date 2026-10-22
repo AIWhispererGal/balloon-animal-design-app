@@ -163,3 +163,39 @@ export async function readProjectFile(file: File): Promise<SavedProject> {
   }
   return parsed;
 }
+
+/* ---------------- editor session (survives navigation and reloads) ---------------- */
+
+const SESSION_KEY = "twistcraft.session.v1";
+
+export interface EditorSession {
+  tiers: Record<ComplexityLevel, FullDesign>;
+  activeComplexity: ComplexityLevel;
+  projectId: string | null;
+}
+
+/** Remember the open design so leaving for the shopping page (or a reload) brings it back as it was. */
+export function saveEditorSession(session: EditorSession): void {
+  try {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // storage full or unavailable: the design simply won't survive navigation
+  }
+}
+
+export function loadEditorSession(): EditorSession | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<EditorSession>;
+    const tiers = parsed.tiers;
+    if (!tiers || !tiers.beginner || !tiers.intermediate || !tiers.advanced) return null;
+    const active: ComplexityLevel =
+      parsed.activeComplexity === "intermediate" || parsed.activeComplexity === "advanced" ? parsed.activeComplexity : "beginner";
+    return { tiers, activeComplexity: active, projectId: typeof parsed.projectId === "string" ? parsed.projectId : null };
+  } catch {
+    return null;
+  }
+}

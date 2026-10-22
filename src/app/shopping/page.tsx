@@ -11,6 +11,7 @@ import {
   RecipeLine,
   costRecipe,
   matchCatalogItem,
+  planForCount,
   planPacks,
   recipeToJson,
   round2,
@@ -86,6 +87,7 @@ function ShoppingWorkspace() {
   const [saved, setSaved] = useState<Recipe[]>(listRecipes);
   const [anchorId, setAnchorId] = useState<string>("");
   const [anchorPacks, setAnchorPacks] = useState(1);
+  const [sculpturesWanted, setSculpturesWanted] = useState(10);
   const [sizeFilter, setSizeFilter] = useState<string>("all");
   const [brandFilter, setBrandFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -109,6 +111,7 @@ function ShoppingWorkspace() {
     () => (effectiveAnchor ? planPacks(recipe, catalog, effectiveAnchor, anchorPacks) : null),
     [recipe, effectiveAnchor, anchorPacks]
   );
+  const countPlan = useMemo(() => planForCount(recipe, catalog, sculpturesWanted), [recipe, sculpturesWanted]);
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -145,7 +148,7 @@ function ShoppingWorkspace() {
     } else setToast("Could not save in this browser.");
   };
 
-  const exportJson = () => recipeToJson(recipe, catalog, plan);
+  const exportJson = () => recipeToJson(recipe, catalog, plan, countPlan);
 
   const handleDownload = () => {
     const blob = new Blob([JSON.stringify(exportJson(), null, 2)], { type: "application/json" });
@@ -386,6 +389,71 @@ function ShoppingWorkspace() {
                 </p>
               )}
             </div>
+
+            {/* How many sculptures */}
+            {countPlan && (
+              <div className="panel">
+                <div className="panel-header">
+                  <div>
+                    <h2 className="panel-title">Shopping list for an event</h2>
+                    <p className="panel-sub">How many sculptures do you need? Every line rounds up to whole packs.</p>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <input
+                      type="number"
+                      min={1}
+                      value={sculpturesWanted}
+                      onChange={(e) => setSculpturesWanted(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="input input-sm w-20 text-right font-mono"
+                    />
+                    <span className="text-slate-400">sculptures</span>
+                  </div>
+                </div>
+                <table className="w-full text-xs">
+                  <thead className="text-[11px] uppercase tracking-wider text-slate-500">
+                    <tr className="border-b border-slate-800">
+                      <th className="px-4 py-2 text-left">Balloon</th>
+                      <th className="px-2 py-2 text-right">Need</th>
+                      <th className="px-2 py-2 text-right">Packs</th>
+                      <th className="px-2 py-2 text-right">Balloons</th>
+                      <th className="px-2 py-2 text-right">Spare</th>
+                      <th className="px-2 py-2 text-right">Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {countPlan.lines.map((l) => (
+                      <tr key={l.item.id} className="border-b border-slate-800/70">
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: l.item.hex ?? "#64748b" }} />
+                            <span className="font-medium text-slate-100">
+                              <span className="font-mono text-amber-200">{l.item.size}</span> {l.item.color}
+                              <span className="text-slate-500"> · {l.item.brand} {l.item.packQty}ct</span>
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-400">{l.line.qty * countPlan.sculptures}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-100">{l.packs}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-400">{l.balloons}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-400">{l.leftover}</td>
+                        <td className="px-2 py-2 text-right font-mono text-slate-100">{money(l.cost)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="text-sm">
+                      <td className="px-4 py-3 font-semibold text-white" colSpan={3}>
+                        {countPlan.sculptures} sculpture{countPlan.sculptures !== 1 ? "s" : ""}
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono text-slate-300" colSpan={2}>
+                        {money(countPlan.costPerSculpture)} each
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono font-semibold text-amber-200">{money(countPlan.totalCost)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
 
             {/* Pack planner */}
             {plan && (
