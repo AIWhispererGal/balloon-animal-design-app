@@ -500,8 +500,15 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       container.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
+      // The environment pre-filter's shaders make Windows' shader compiler (ANGLE on
+      // Direct3D) emit harmless "X4122 cannot be represented accurately" notes, which
+      // three prints as program-log warnings. Skip the log check for this step only,
+      // so real shader errors in the scene's materials are still reported.
       const pmrem = new THREE.PMREMGenerator(renderer);
+      const checkShaderErrors = renderer.debug.checkShaderErrors;
+      renderer.debug.checkShaderErrors = false;
       const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+      renderer.debug.checkShaderErrors = checkShaderErrors;
       scene.environment = envRT.texture;
       scene.environmentIntensity = 0.72;
 
