@@ -10,7 +10,7 @@ import { SavedProjectSummary } from "@/lib/designStorage";
 interface NewDesignModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onDesignsGenerated: (designs: Record<ComplexityLevel, FullDesign>, label: string) => void;
+  onDesignsGenerated: (designs: Record<ComplexityLevel, FullDesign>, label: string, imageUrl?: string) => void;
   onStartBlankSlate: () => void;
   projects: SavedProjectSummary[];
   onOpenProject: (id: string) => void;
@@ -56,8 +56,8 @@ export const NewDesignModal: React.FC<NewDesignModalProps> = ({
           <X className="h-4 w-4" />
         </button>
         <PromptImageConverter
-          onDesignsGenerated={(designs, label) => {
-            onDesignsGenerated(designs, label);
+          onDesignsGenerated={(designs, label, imageUrl) => {
+            onDesignsGenerated(designs, label, imageUrl);
             onClose();
           }}
           onStartBlankSlate={() => {

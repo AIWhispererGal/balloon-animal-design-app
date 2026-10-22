@@ -5,6 +5,7 @@ import {
   BookOpen,
   Camera,
   Download,
+  ImagePlus,
   FileDown,
   Layers,
   ListOrdered,
@@ -80,6 +81,8 @@ import {
   saveEditorSession,
 } from "@/lib/designStorage";
 import { AddBalloonRequest } from "@/components/AddBalloonPopover";
+import { ReferenceImagePanel } from "@/components/ReferenceImagePanel";
+import { dataUrlToReferenceDataUrl, fileToReferenceDataUrl } from "@/lib/referenceImage";
 import { setCurrentDesign, setRecipeHandoff } from "@/lib/recipeStorage";
 
 const subscribeNoop = () => () => {};
@@ -118,6 +121,10 @@ function BalloonEditor() {
   const [isNewDesignOpen, setIsNewDesignOpen] = useState(false);
   /** Identity of the saved project this session was opened from (null = unsaved) */
   const [projectId, setProjectId] = useState<string | null>(() => session?.projectId ?? null);
+  /** Reference photo the sculpture is modelled on (small data URL); saved with the project */
+  const [referenceImage, setReferenceImage] = useState<string | null>(() => session?.referenceImage ?? null);
+  const [showReference, setShowReference] = useState(true);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const [savedProjects, setSavedProjects] = useState<SavedProjectSummary[]>([]);
   const [isEncyclopediaOpen, setIsEncyclopediaOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -413,10 +420,21 @@ function BalloonEditor() {
 
   const handleDesignsGenerated = (
     newDesigns: Record<ComplexityLevel, FullDesign>,
-    promptOrLabel: string
+    promptOrLabel: string,
+    imageUrl?: string
   ) => {
     setDesignTierMap(newDesigns);
     setProjectId(null);
+    // The photo the design was made from becomes the reference to sculpt against
+    setReferenceImage(null);
+    if (imageUrl) {
+      dataUrlToReferenceDataUrl(imageUrl)
+        .then((url) => {
+          setReferenceImage(url);
+          setShowReference(true);
+        })
+        .catch(() => undefined);
+    }
     setBuildMode("step");
     setCurrentStepIndex(Math.max(0, newDesigns[activeComplexity].steps.length - 1));
     setSelectedIndices([0]);
@@ -435,6 +453,19 @@ function BalloonEditor() {
     setActiveBalloonId(blankDesigns.beginner.balloons[0]?.id ?? null);
     setRightPanelTab("cad_editor");
     showToast("Blank balloon ready. Pick a twist from the palette to make your first bubble.");
+  };
+
+  /* ---------------- reference photo ---------------- */
+
+  const handleReferenceFile = async (file: File) => {
+    try {
+      const url = await fileToReferenceDataUrl(file);
+      setReferenceImage(url);
+      setShowReference(true);
+      showToast("Reference photo added. It is saved with the design.");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not read that image.");
+    }
   };
 
   /* ---------------- bubble edits ---------------- */
@@ -779,8 +810,8 @@ function BalloonEditor() {
 
   // Remember the open design (all tiers, orientation included) across navigation and reloads
   useEffect(() => {
-    saveEditorSession({ tiers: designTierMap, activeComplexity, projectId });
-  }, [designTierMap, activeComplexity, projectId]);
+    saveEditorSession({ tiers: designTierMap, activeComplexity, projectId, referenceImage });
+  }, [designTierMap, activeComplexity, projectId, referenceImage]);
 
   // Keep the shopping page's "current design" recipe in sync with what is open here
   useEffect(() => {
@@ -849,7 +880,7 @@ function BalloonEditor() {
   const refreshLibrary = useCallback(() => setSavedProjects(listProjects()), []);
 
   const handleSave = () => {
-    const project = makeProject(designTierMap, activeComplexity, projectId ?? undefined, currentDesign.title);
+    const project = makeProject(designTierMap, activeComplexity, projectId ?? undefined, currentDesign.title, referenceImage);
     if (saveProject(project)) {
       setProjectId(project.id);
       refreshLibrary();
@@ -860,7 +891,7 @@ function BalloonEditor() {
   };
 
   const handleDownloadJson = () => {
-    downloadProjectJson(makeProject(designTierMap, activeComplexity, projectId ?? undefined, currentDesign.title));
+    downloadProjectJson(makeProject(designTierMap, activeComplexity, projectId ?? undefined, currentDesign.title, referenceImage));
     showToast("Design file downloaded.");
   };
 
@@ -868,6 +899,8 @@ function BalloonEditor() {
     setDesignTierMap(project.tiers);
     setActiveComplexity(project.activeComplexity);
     setProjectId(project.id);
+    setReferenceImage(project.referenceImage ?? null);
+    setShowReference(true);
     setBuildMode("step");
     const d = project.tiers[project.activeComplexity];
     setCurrentStepIndex(Math.max(0, d.steps.length - 1));
@@ -1020,12 +1053,56 @@ function BalloonEditor() {
                     ))
                   )}
                 </div>
-                <button onClick={handleCapturePng} className="btn btn-ghost btn-xs">
-                  <Camera className="h-3.5 w-3.5" /> Snapshot
-                </button>
+                <div className="flex items-center gap-1">
+                  <input
+                    ref={referenceInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleReferenceFile(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    onClick={() => (referenceImage ? setShowReference((v) => !v) : referenceInputRef.current?.click())}
+                    className={`btn btn-ghost btn-xs ${referenceImage && showReference ? "text-amber-300" : ""}`}
+                    title={referenceImage ? "Show or hide the reference photo" : "Add a reference photo to sculpt against"}
+                  >
+                    <ImagePlus className="h-3.5 w-3.5" /> Reference
+                  </button>
+                  <button onClick={handleCapturePng} className="btn btn-ghost btn-xs">
+                    <Camera className="h-3.5 w-3.5" /> Snapshot
+                  </button>
+                </div>
               </div>
 
-              <div className="h-[600px] w-full">
+              <div
+                className="relative h-[600px] w-full"
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+                }}
+                onDrop={(e) => {
+                  const f = e.dataTransfer.files?.[0];
+                  if (f && f.type.startsWith("image/")) {
+                    e.preventDefault();
+                    void handleReferenceFile(f);
+                  }
+                }}
+              >
+                {referenceImage && (
+                  <ReferenceImagePanel
+                    src={referenceImage}
+                    visible={showReference}
+                    onToggleVisible={() => setShowReference((v) => !v)}
+                    onReplace={(f) => void handleReferenceFile(f)}
+                    onRemove={() => {
+                      setReferenceImage(null);
+                      showToast("Reference photo removed.");
+                    }}
+                  />
+                )}
                 <ThreeBalloonViewer
                   ref={viewerRef}
                   balloons={currentDesign.balloons}

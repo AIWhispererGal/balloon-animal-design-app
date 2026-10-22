@@ -67,16 +67,41 @@ export function vRotate(v: Vec3, axisIn: Vec3, angleDeg: number): Vec3 {
   );
 }
 
-/** Stable orthonormal frame around `dir`: `side` lies horizontal when possible. */
-export function frameFor(dirIn: Vec3): { side: Vec3; up: Vec3 } {
+/** `v` with its component along unit vector `dir` removed (not normalised). */
+const vRejectFrom = (v: Vec3, dir: Vec3): Vec3 => vSub(v, vScale(dir, vDot(v, dir)));
+
+/**
+ * Stable orthonormal frame around `dir`: `side` lies horizontal when possible.
+ * A vertical (or nearly vertical) heading has no horizontal perpendicular, so
+ * there `side` comes from `fallbackSide` (the lateral of the chain feeding this
+ * heading, when the caller has one) instead of being arbitrary.
+ */
+export function frameFor(dirIn: Vec3, fallbackSide?: Vec3): { side: Vec3; up: Vec3 } {
   const dir = vNorm(dirIn);
-  // side = WORLD_UP x dir so for dir = +X (1,0,0), side = +Z (left) and up = +Y (up)!
-  // Then rotating `dir` around `side` (+Z) by +angle pitches UP (+Y) — intuitive!
+  // side = WORLD_UP x dir so for dir = +X (1,0,0), side = -Z and up = +Y
   let side = vCross(WORLD_UP, dir);
-  if (vLen(side) < 1e-4) {
-    side = [0, 0, 1];
+  if (vLen(side) < 0.05) {
+    const fromHint = fallbackSide ? vRejectFrom(fallbackSide, dir) : ([0, 0, 0] as Vec3);
+    side = vLen(fromHint) > 0.2 ? fromHint : [0, 0, 1];
   }
   side = vNorm(side, [0, 0, 1]);
+  const up = vNorm(vCross(dir, side), WORLD_UP);
+  return { side, up };
+}
+
+/**
+ * Frame around `dir` whose `side` is the parent's lateral `hintSide` carried along
+ * (parallel transport): the closest unit vector to `hintSide` that is perpendicular
+ * to `dir`. This is the lateral a twister folds a pair of legs or ears across: the
+ * pair sits side by side relative to the body it hangs from, however steeply the
+ * limbs point. Falls back to the horizontal frame when the hint is (nearly)
+ * parallel to `dir`.
+ */
+export function transportFrame(dirIn: Vec3, hintSide: Vec3 | undefined): { side: Vec3; up: Vec3 } {
+  const dir = vNorm(dirIn);
+  const projected = hintSide ? vRejectFrom(hintSide, dir) : ([0, 0, 0] as Vec3);
+  if (vLen(projected) < 0.2) return frameFor(dir, hintSide);
+  const side = vNorm(projected);
   const up = vNorm(vCross(dir, side), WORLD_UP);
   return { side, up };
 }
@@ -238,6 +263,8 @@ export function computeBalloonLayout(
   interface ChainCursor {
     pos: Vec3;
     dir: Vec3;
+    /** Lateral of the chain at `dir`, carried along the balloon (pairs fold across it) */
+    side: Vec3;
     pinchCountAtPos: number;
     sideCountAtPos: number;
   }
@@ -399,6 +426,7 @@ export function computeBalloonLayout(
     const cur: ChainCursor = {
       pos,
       dir,
+      side: frameFor(dir).side,
       pinchCountAtPos: 0,
       sideCountAtPos: 0,
     };
@@ -456,13 +484,15 @@ export function computeBalloonLayout(
     const len = Math.max(0.25, (b.lengthInches || 2.0) * UNIT);
     const radius = radiusForDiameter(b.diameterInches);
     const incomingDir: Vec3 = b.baseDir ? vNorm(b.baseDir) : ([...cur.dir] as Vec3);
+    // Lateral of the heading this bubble branches from (what a pair folds across)
+    const incomingSide: Vec3 = transportFrame(incomingDir, cur.side).side;
 
     const applyBendTurn = (base: Vec3): Vec3 => {
       let d = vNorm(base);
       const bendDeg = b.bend ?? 0;
       const turnDeg = b.turn ?? 0;
       if (bendDeg || turnDeg) {
-        const f = frameFor(d);
+        const f = frameFor(d, incomingSide);
         if (bendDeg) d = vRotate(d, f.side, bendDeg);
         if (turnDeg) d = vRotate(d, f.up, turnDeg);
       }
@@ -484,6 +514,8 @@ export function computeBalloonLayout(
     let partnerIndex: number | undefined;
     let chainEnd: Vec3 = [...cur.pos] as Vec3;
     let chainDir: Vec3 = [...dir] as Vec3;
+    /** Lateral used to place this bubble when it is one of a folded pair */
+    let pairSide: Vec3 | undefined;
 
     /* ---- 1. 2-Bubble Folded Lock Pair ---- */
     if (lockInfo) {
@@ -491,7 +523,11 @@ export function computeBalloonLayout(
       if (lockInfo.role === "out") {
         const preHeading: Vec3 = [...cur.dir] as Vec3;
         dir = applyBendTurn(incomingDir);
-        const f = frameFor(dir);
+        // The two tubes sit side by side ACROSS the body they hang from, so the
+        // separation is the parent's lateral carried through the bend/turn, never
+        // a fresh horizontal guess (which swings along the spine for a steep limb).
+        const f = transportFrame(dir, incomingSide);
+        pairSide = f.side;
         const sep = radius * 0.68;
         jointStart = [...cur.pos] as Vec3;
         jointEnd = vAdd(jointStart, vScale(dir, len));
@@ -512,6 +548,7 @@ export function computeBalloonLayout(
       } else {
         const span = activeLockSpan.get(index)!;
         const sep = radius * 0.68;
+        pairSide = vScale(span.sideVec, -1);
         jointStart = span.tipJointPos;
         jointEnd = span.baseJointPos;
         // Return tube runs from tip back toward base along -outDir on the opposite lateral side (-sideVec)
@@ -530,7 +567,9 @@ export function computeBalloonLayout(
       jointEnd = [...targetLayout.jointStart] as Vec3;
       const chord = vSub(jointEnd, jointStart);
       const chordDir = vNorm(chord, applyBendTurn(incomingDir));
-      const f = frameFor(chordDir);
+      // Lateral of the body at the joint the leg returns to, so both legs stand astride it
+      const f = transportFrame(chordDir, targetLayout.side);
+      pairSide = f.side;
       // Offset opposite side from the outgoing leg so Left & Right legs stand visibly side-by-side!
       const lateral = vScale(f.side, radius * 0.72);
       // Also shift outgoing twin subtly if collinear so both legs stand symmetrically astride the spine!
@@ -756,7 +795,7 @@ export function computeBalloonLayout(
       mid = vAdd(mid, off);
     }
 
-    const { side, up } = frameFor(dir);
+    const { side, up } = pairSide ? transportFrame(dir, pairSide) : frameFor(dir, incomingSide);
 
     rawLayouts[index] = {
       index,
@@ -784,6 +823,7 @@ export function computeBalloonLayout(
 
     const movedJoint = vDist(cur.pos, chainEnd) > 0.08;
     cur.pos = chainEnd;
+    cur.side = transportFrame(chainDir, cur.side).side;
     cur.dir = chainDir;
     if (movedJoint) {
       cur.pinchCountAtPos = 0;

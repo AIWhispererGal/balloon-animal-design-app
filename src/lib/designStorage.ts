@@ -1,4 +1,5 @@
 import { ComplexityLevel, FullDesign } from "@/types/balloon";
+import { isReferenceDataUrl } from "./referenceImage";
 
 /**
  * Designs are saved in the browser (localStorage) and can be moved between
@@ -18,6 +19,8 @@ export interface SavedProject {
   savedAt: string;
   activeComplexity: ComplexityLevel;
   tiers: Record<ComplexityLevel, FullDesign>;
+  /** Reference photo (small JPEG data URL) the sculpture is modelled on; shared by all tiers */
+  referenceImage?: string;
 }
 
 export interface SavedProjectSummary {
@@ -88,7 +91,8 @@ export function makeProject(
   tiers: Record<ComplexityLevel, FullDesign>,
   activeComplexity: ComplexityLevel,
   id?: string,
-  title?: string
+  title?: string,
+  referenceImage?: string | null
 ): SavedProject {
   return {
     format: PROJECT_FORMAT,
@@ -98,6 +102,7 @@ export function makeProject(
     savedAt: new Date().toISOString(),
     activeComplexity,
     tiers,
+    ...(isReferenceDataUrl(referenceImage) ? { referenceImage } : {}),
   };
 }
 
@@ -172,6 +177,7 @@ export interface EditorSession {
   tiers: Record<ComplexityLevel, FullDesign>;
   activeComplexity: ComplexityLevel;
   projectId: string | null;
+  referenceImage?: string | null;
 }
 
 /** Remember the open design so leaving for the shopping page (or a reload) brings it back as it was. */
@@ -194,7 +200,12 @@ export function loadEditorSession(): EditorSession | null {
     if (!tiers || !tiers.beginner || !tiers.intermediate || !tiers.advanced) return null;
     const active: ComplexityLevel =
       parsed.activeComplexity === "intermediate" || parsed.activeComplexity === "advanced" ? parsed.activeComplexity : "beginner";
-    return { tiers, activeComplexity: active, projectId: typeof parsed.projectId === "string" ? parsed.projectId : null };
+    return {
+      tiers,
+      activeComplexity: active,
+      projectId: typeof parsed.projectId === "string" ? parsed.projectId : null,
+      referenceImage: isReferenceDataUrl(parsed.referenceImage) ? parsed.referenceImage : null,
+    };
   } catch {
     return null;
   }
