@@ -1,7 +1,7 @@
 import { BalloonSize, BalloonSpec, BubbleSpec, ComplexityLevel, FullDesign } from "@/types/balloon";
 import { PRESET_DESIGNS, buildDesign } from "./balloonPresets";
 import { defaultDiameterForSize } from "./balloonLayout";
-import { twistAirCost } from "./balloonAir";
+import { computeAirBudget, fitTailForBubbles } from "./balloonAir";
 import { TWISTER_COLORS } from "./balloonConstants";
 
 /**
@@ -40,7 +40,10 @@ export interface Archetype {
   name: string;
   description: string;
   category: string;
+  /** Which tier of its family this plan is (the beginner puppy, the intermediate dachshund) */
   complexity: ComplexityLevel;
+  /** Family name: plans of the same subject at different tiers share it ("Dog") */
+  family: string;
   builtIn: boolean;
   balloons: BalloonSpec[];
   bubbles: BubbleSpec[];
@@ -163,14 +166,22 @@ export function deriveParts(bubbles: BubbleSpec[]): ArchetypePart[] {
 }
 
 /** Turn a design into an archetype (its geometry becomes the template). */
-export function archetypeFromDesign(design: FullDesign, name: string, builtIn = false, id?: string): Archetype {
+export function archetypeFromDesign(
+  design: FullDesign,
+  family: string,
+  tier: ComplexityLevel = design.complexity,
+  builtIn = false,
+  id?: string,
+  name?: string
+): Archetype {
   const bubbles = design.bubbles.map((b, index) => ({ ...b, index }));
   return {
     id: id ?? `arch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    name: name.trim() || design.title,
+    name: (name ?? "").trim() || design.title,
     description: design.description,
     category: design.category || "custom",
-    complexity: design.complexity,
+    complexity: tier,
+    family: family.trim() || design.title,
     builtIn,
     balloons: design.balloons.map((b) => ({ ...b })),
     bubbles,
@@ -182,13 +193,140 @@ export function archetypeFromDesign(design: FullDesign, name: string, builtIn = 
 
 /* ---------------- built-in and saved archetypes ---------------- */
 
-export const BUILT_IN_ARCHETYPES: Archetype[] = [
-  archetypeFromDesign(PRESET_DESIGNS.dog.beginner, "Dog / quadruped (1 balloon)", true, "builtin-dog-1"),
-  archetypeFromDesign(PRESET_DESIGNS.dog.intermediate, "Dachshund with paws (2 balloons)", true, "builtin-dog-2"),
-  archetypeFromDesign(PRESET_DESIGNS.sword.beginner, "Cutlass sword (1 balloon)", true, "builtin-sword-1"),
-  archetypeFromDesign(PRESET_DESIGNS.sword.intermediate, "Broadsword (2 balloons)", true, "builtin-sword-2"),
-  archetypeFromDesign(PRESET_DESIGNS.flower.beginner, "Daisy flower (2 balloons)", true, "builtin-flower-2"),
+export const TIERS: ComplexityLevel[] = ["beginner", "intermediate", "advanced"];
+
+export const BUILT_IN_ARCHETYPES: Archetype[] = (
+  [
+    ["dog", "Dog"],
+    ["sword", "Sword"],
+    ["flower", "Flower"],
+  ] as Array<[keyof typeof PRESET_DESIGNS, string]>
+).flatMap(([key, family]) =>
+  TIERS.map((tier) => archetypeFromDesign(PRESET_DESIGNS[key][tier], family, tier, true, `builtin-${key}-${tier}`))
+);
+
+/* ---------------- families: the same subject at three tiers ---------------- */
+
+export interface PlanFamily {
+  /** Lower-cased family name, the id the builder and the AI pick by */
+  key: string;
+  name: string;
+  builtIn: boolean;
+  tiers: Partial<Record<ComplexityLevel, Archetype>>;
+  plans: Archetype[];
+}
+
+export const familyKey = (name: string) => name.trim().toLowerCase();
+
+export function groupFamilies(archetypes: Archetype[]): PlanFamily[] {
+  const map = new Map<string, PlanFamily>();
+  archetypes.forEach((a) => {
+    const key = familyKey(a.family);
+    const fam = map.get(key) ?? { key, name: a.family.trim(), builtIn: a.builtIn, tiers: {}, plans: [] };
+    if (!fam.tiers[a.complexity]) fam.tiers[a.complexity] = a;
+    fam.plans.push(a);
+    fam.builtIn = fam.builtIn && a.builtIn;
+    map.set(key, fam);
+  });
+  return [...map.values()];
+}
+
+/** The plan a family builds for a tier: its own, else the nearest lower tier, else the nearest higher. */
+export function planForTier(f: PlanFamily, tier: ComplexityLevel): Archetype {
+  const i = TIERS.indexOf(tier);
+  for (let k = i; k >= 0; k--) if (f.tiers[TIERS[k]]) return f.tiers[TIERS[k]]!;
+  for (let k = i + 1; k < TIERS.length; k++) if (f.tiers[TIERS[k]]) return f.tiers[TIERS[k]]!;
+  return f.plans[0];
+}
+
+/** Parts with the same name in different tiers are the same thing ("Front Legs" on the puppy and on the dachshund) */
+const PART_SYNONYMS: Array<[RegExp, string]> = [
+  [/\b(torso|trunk)\b/g, "body"],
+  [/\b(muzzle|nose)\b/g, "snout"],
+  [/\b(rear)\b/g, "back"],
+  [/\b(paws?|toes?)\b/g, "paw"],
 ];
+const PART_FILLER = /\b(the|a|twist|bubble|bubbles|long|short|big|little|wiener|hound|perky|floppy|curved|s|loop|loops|pinch|bead|stem)\b/g;
+export const partKey = (label: string) => {
+  let k = label.toLowerCase().replace(/[^a-z0-9 ]+/g, " ");
+  PART_SYNONYMS.forEach(([re, to]) => (k = k.replace(re, to)));
+  const words = k.replace(PART_FILLER, " ").split(/\s+/).filter(Boolean);
+  return words.filter((w, i) => words.indexOf(w) === i).join(" ");
+};
+
+export interface FamilyBuildSettings {
+  title?: string;
+  /** Per plan id, the settings its tier is built with */
+  byPlan: Record<string, ArchetypeBuildSettings>;
+}
+
+export function defaultFamilySettings(f: PlanFamily): FamilyBuildSettings {
+  const byPlan: Record<string, ArchetypeBuildSettings> = {};
+  f.plans.forEach((a) => (byPlan[a.id] = defaultBuildSettings(a)));
+  return { byPlan };
+}
+
+/**
+ * Set a part's length on one plan and carry the same proportion (length relative to
+ * the template) to parts of the same name in the family's other tiers, so "longer
+ * legs" means longer legs in every tier.
+ */
+export function setFamilyPartLength(f: PlanFamily, s: FamilyBuildSettings, planId: string, partId: string, length: number): FamilyBuildSettings {
+  const src = f.plans.find((a) => a.id === planId);
+  const part = src?.parts.find((p) => p.id === partId);
+  if (!src || !part) return s;
+  const ratio = length / Math.max(0.25, part.templateLength);
+  const key = partKey(part.label);
+  const byPlan = { ...s.byPlan };
+  f.plans.forEach((a) => {
+    const cur = byPlan[a.id] ?? defaultBuildSettings(a);
+    const partLengths = { ...cur.partLengths };
+    a.parts.forEach((p) => {
+      if (p.fixed) return;
+      if (a.id === planId ? p.id === partId : partKey(p.label) === key) {
+        partLengths[p.id] = q(Math.min(p.maxLength, Math.max(p.minLength, a.id === planId ? length : p.templateLength * ratio)));
+      }
+    });
+    byPlan[a.id] = { ...cur, partLengths };
+  });
+  return { ...s, byPlan };
+}
+
+/** Set a balloon's color or gauge on one plan and carry it to the same balloon position in the other tiers. */
+export function setFamilyBalloon(
+  f: PlanFamily,
+  s: FamilyBuildSettings,
+  planId: string,
+  balloonId: string,
+  patch: Partial<ArchetypeBalloonChoice>
+): FamilyBuildSettings {
+  const src = f.plans.find((a) => a.id === planId);
+  const order = src?.balloons.findIndex((b) => b.id === balloonId) ?? -1;
+  if (!src || order < 0) return s;
+  const byPlan = { ...s.byPlan };
+  f.plans.forEach((a) => {
+    const target = a.id === planId ? a.balloons[order] : a.balloons[order];
+    if (!target) return;
+    const cur = byPlan[a.id] ?? defaultBuildSettings(a);
+    // Gauge only carries across when the template gauges agreed (a 160 collar stays a 160)
+    const carry = a.id === planId || !patch.size || target.size === src.balloons[order].size ? patch : { color: patch.color, colorName: patch.colorName };
+    byPlan[a.id] = { ...cur, balloons: { ...cur.balloons, [target.id]: { ...cur.balloons[target.id], ...carry } } };
+  });
+  return { ...s, byPlan };
+}
+
+/** Build the three editor tiers from a family: each tier from its own plan (or the nearest one). */
+export function buildDesignsFromFamily(f: PlanFamily, s: FamilyBuildSettings): Record<ComplexityLevel, FullDesign> {
+  const title = (s.title ?? "").trim() || f.name;
+  const stamp = Date.now().toString(36);
+  const out = {} as Record<ComplexityLevel, FullDesign>;
+  TIERS.forEach((tier) => {
+    const a = planForTier(f, tier);
+    const settings = s.byPlan[a.id] ?? defaultBuildSettings(a);
+    out[tier] = buildDesignFromArchetype(a, settings, tier, title, `arch-${stamp}-${tier}`);
+  });
+  return out;
+}
 
 function canStore(): boolean {
   try {
@@ -209,7 +347,9 @@ export function listCustomArchetypes(): Archetype[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(isArchetype).map((a) => ({ ...a, builtIn: false })) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(isArchetype).map((a) => ({ ...a, builtIn: false, family: typeof a.family === "string" && a.family.trim() ? a.family : a.name }))
+      : [];
   } catch {
     return [];
   }
@@ -225,15 +365,23 @@ function writeCustom(list: Archetype[]): boolean {
   }
 }
 
-/** Save a one- or two-balloon design as a body plan in this browser. */
-export function saveDesignAsArchetype(design: FullDesign, name: string): { ok: true; archetype: Archetype } | { ok: false; reason: string } {
+/** Save a one- or two-balloon design as the given tier of a body-plan family in this browser. */
+export function saveDesignAsArchetype(
+  design: FullDesign,
+  family: string,
+  tier: ComplexityLevel
+): { ok: true; archetype: Archetype } | { ok: false; reason: string } {
   if (design.bubbles.length === 0) return { ok: false, reason: "The design has no bubbles yet." };
   if (design.balloons.length > MAX_ARCHETYPE_BALLOONS) {
     return { ok: false, reason: `Body plans are one- or two-balloon recipes (this design has ${design.balloons.length} balloons).` };
   }
-  const archetype = archetypeFromDesign(design, name);
-  const list = [archetype, ...listCustomArchetypes().filter((a) => a.name.toLowerCase() !== archetype.name.toLowerCase())];
-  return writeCustom(list) ? { ok: true, archetype } : { ok: false, reason: "Browser storage is unavailable or full." };
+  const archetype = archetypeFromDesign(design, family, tier, false, undefined, `${design.title} (${tier})`);
+  if (BUILT_IN_ARCHETYPES.some((a) => familyKey(a.family) === familyKey(archetype.family))) {
+    return { ok: false, reason: `"${archetype.family}" is a built-in family; give yours another name.` };
+  }
+  // One plan per tier per family: the same tier of the same family is replaced
+  const rest = listCustomArchetypes().filter((a) => !(familyKey(a.family) === familyKey(archetype.family) && a.complexity === tier));
+  return writeCustom([archetype, ...rest]) ? { ok: true, archetype } : { ok: false, reason: "Browser storage is unavailable or full." };
 }
 
 export function deleteCustomArchetype(id: string): void {
@@ -287,27 +435,30 @@ export function applyBuildSettings(a: Archetype, s: ArchetypeBuildSettings): { b
   return { balloons, bubbles };
 }
 
-/** Inches of balloon a build needs per balloon, against what one balloon can give. */
+/**
+ * Air per balloon for a build, by the app's own air model: the balloon is inflated
+ * just enough for its bubbles (as buildDesign does) and the budget is checked the
+ * way the editor checks it, so the builder and the editor agree on what fits.
+ */
 export function buildAirUse(balloons: BalloonSpec[], bubbles: BubbleSpec[]): Array<{ balloon: BalloonSpec; used: number; capacity: number; over: boolean }> {
   return balloons.map((bal) => {
-    let used = 0;
-    bubbles.forEach((b) => {
-      if (b.balloonId !== bal.id) return;
-      used += b.lengthInches + twistAirCost(b.twistType);
-    });
-    const capacity = bal.size === "260" ? 50 : 42;
-    return { balloon: bal, used: Math.round(used * 10) / 10, capacity, over: used > capacity };
+    const tail = fitTailForBubbles(bal, bubbles);
+    const air = computeAirBudget({ ...bal, tailLengthInches: tail }, bubbles);
+    return {
+      balloon: bal,
+      used: Math.round((air.bubbleInches + air.twistShiftInches) * 10) / 10,
+      capacity: Math.round(air.inflatedInches * 10) / 10,
+      over: air.status === "over_budget" || air.status === "pop_risk",
+    };
   });
 }
 
-/** Build the three editor tiers from an archetype. All three start as the same sculpture. */
-export function buildDesignsFromArchetype(a: Archetype, s: ArchetypeBuildSettings): Record<ComplexityLevel, FullDesign> {
+/** Build one tier's design from a plan with the chosen settings. */
+export function buildDesignFromArchetype(a: Archetype, s: ArchetypeBuildSettings, complexity: ComplexityLevel, title: string, id: string): FullDesign {
   const { balloons, bubbles } = applyBuildSettings(a, s);
-  const title = (s.title ?? "").trim() || a.name.replace(/\s*\(\d balloons?\)\s*$/i, "");
-  const stamp = Date.now().toString(36);
-  const make = (complexity: ComplexityLevel): FullDesign => ({
+  return {
     ...buildDesign({
-      id: `arch-${stamp}-${complexity}`,
+      id,
       title,
       description: `${title}: built from the "${a.name}" body plan.`,
       category: a.category,
@@ -319,8 +470,7 @@ export function buildDesignsFromArchetype(a: Archetype, s: ArchetypeBuildSetting
       annotations: ["Built from a body plan: every twist is already anchored. Resize parts in 3D, or add detail bubbles from the palette."],
     }),
     orientation: a.orientation,
-  });
-  return { beginner: make("beginner"), intermediate: make("intermediate"), advanced: make("advanced") };
+  };
 }
 
 export function colorNameForHex(hex: string): string {

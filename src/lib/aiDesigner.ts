@@ -5,7 +5,22 @@ import { buildDesign } from "./balloonPresets";
 import { autoStabilizeSculpture, defaultDiameterForSize } from "./balloonLayout";
 import { Catalog, matchCatalogItem } from "./recipeMath";
 import catalogJson from "@/data/balloonCatalog.json";
-import { Archetype, ArchetypeBuildSettings, buildAirUse, applyBuildSettings, buildDesignsFromArchetype } from "./archetypes";
+import {
+  Archetype,
+  ArchetypePart,
+  FamilyBuildSettings,
+  PlanFamily,
+  TIERS,
+  applyBuildSettings,
+  buildAirUse,
+  buildDesignsFromFamily,
+  defaultFamilySettings,
+  groupFamilies,
+  partKey,
+  planForTier,
+  setFamilyBalloon,
+  setFamilyPartLength,
+} from "./archetypes";
 
 /**
  * AI design engine: sends the description and/or reference image to Claude and
@@ -424,18 +439,19 @@ function tierToDesign(
 export const __test_tierToDesign = tierToDesign;
 
 /* ====================================================================
- * Plan-based design: the model picks a body plan and sets proportions.
- * The builder in archetypes.ts makes the geometry, so the result always
- * holds; the model only answers the questions a vision model is good at.
+ * Plan-based design: the model picks a body-plan FAMILY and sets its
+ * proportions and colors. The builder in archetypes.ts makes the geometry
+ * for every tier, so the result always holds; the model only answers the
+ * questions a vision model is good at.
  * ==================================================================== */
 
 export interface AiPlanOut {
   subject: string;
-  planId: string;
+  familyKey: string;
   title: string;
   reason: string;
-  parts: Array<{ id: string; lengthInches: number }>;
-  balloons: Array<{ id: string; colorName: string; size: "160" | "260" | "360" }>;
+  parts: Array<{ part: string; lengthInches: number }>;
+  balloons: Array<{ position: number; colorName: string; size: "160" | "260" | "360" }>;
 }
 
 export interface AiPlanRequest extends AiDesignRequest {
@@ -443,44 +459,69 @@ export interface AiPlanRequest extends AiDesignRequest {
 }
 
 export interface AiPlanResult extends AiDesignResult {
-  plan: Archetype;
+  family: PlanFamily;
   reason: string;
 }
 
-const partSummary = (a: Archetype) =>
-  a.parts
-    .map((p) => (p.fixed ? `${p.id} "${p.label}" (fixed pinch)` : `${p.id} "${p.label}"${p.kind === "pair" ? " (lock pair)" : p.kind === "group" ? " (folded group)" : ""}: default ${p.templateLength}", allowed ${p.minLength}-${p.maxLength}"`))
-    .join("; ");
+/** A family's parts by name, with the range of the first tier that has each part */
+function familyParts(f: PlanFamily): Array<{ key: string; label: string; ref: ArchetypePart; tiers: string[] }> {
+  const map = new Map<string, { key: string; label: string; ref: ArchetypePart; tiers: string[] }>();
+  TIERS.forEach((t) => {
+    const a = f.tiers[t];
+    if (!a) return;
+    a.parts.forEach((p) => {
+      if (p.fixed) return;
+      const key = partKey(p.label);
+      const cur = map.get(key);
+      if (cur) cur.tiers.push(t);
+      else map.set(key, { key, label: p.label, ref: p, tiers: [t] });
+    });
+  });
+  return [...map.values()];
+}
 
-function planSchema(archetypes: Archetype[]) {
+function familySummary(f: PlanFamily): string {
+  const tiers = TIERS.filter((t) => f.tiers[t])
+    .map((t) => {
+      const a = f.tiers[t]!;
+      return `${t}: ${a.name} (${a.balloons.map((b, i) => `balloon ${i + 1} = ${b.size} ${b.name}`).join(", ")})`;
+    })
+    .join("; ");
+  const parts = familyParts(f)
+    .map((p) => `"${p.key}" default ${p.ref.templateLength}" allowed ${p.ref.minLength}-${p.ref.maxLength}"${p.ref.kind === "pair" ? " (pair)" : p.ref.kind === "group" ? " (group)" : ""}`)
+    .join(", ");
+  return `- key "${f.key}": ${f.name}. Tiers: ${tiers}. Parts: ${parts}.`;
+}
+
+function planSchema(families: PlanFamily[]) {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["subject", "planId", "title", "reason", "parts", "balloons"],
+    required: ["subject", "familyKey", "title", "reason", "parts", "balloons"],
     properties: {
       subject: { type: "string", description: "What the sculpture is, e.g. 'Dachshund'" },
-      planId: { type: "string", enum: archetypes.map((a) => a.id), description: "The body plan to build from" },
+      familyKey: { type: "string", enum: families.map((f) => f.key), description: "The body-plan family to build from" },
       title: { type: "string", description: "Short design title" },
-      reason: { type: "string", description: "One sentence: why this plan and these proportions fit the subject" },
+      reason: { type: "string", description: "One sentence: why this family and these proportions fit the subject" },
       parts: {
         type: "array",
-        description: "Length for every non-fixed part of the chosen plan, by part id",
+        description: "Length for each part of the chosen family, by part name exactly as listed. Parts you leave out keep their default.",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["id", "lengthInches"],
-          properties: { id: { type: "string" }, lengthInches: { type: "number" } },
+          required: ["part", "lengthInches"],
+          properties: { part: { type: "string" }, lengthInches: { type: "number" } },
         },
       },
       balloons: {
         type: "array",
-        description: "Color and gauge for every balloon of the chosen plan, by balloon id",
+        description: "Color and gauge by balloon position (1 = the first balloon of every tier, 2 = the second where a tier has one, ...)",
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["id", "colorName", "size"],
+          required: ["position", "colorName", "size"],
           properties: {
-            id: { type: "string" },
+            position: { type: "integer" },
             colorName: { type: "string", description: "One of the latex color names given" },
             size: { type: "string", enum: ["160", "260", "360"] },
           },
@@ -490,20 +531,18 @@ function planSchema(archetypes: Archetype[]) {
   };
 }
 
-function planSystemPrompt(archetypes: Archetype[]): string {
-  const plans = archetypes
-    .map((a) => `- id "${a.id}": ${a.name}. ${a.description} Balloons: ${a.balloons.map((b) => `${b.id} (${b.size}, ${b.name})`).join(", ")}. Parts: ${partSummary(a)}.`)
-    .join("\n");
-  return `You are a professional balloon twister. A twister designs from a BODY PLAN: a dog is snout, ear pair, neck, front leg pair, body, back leg pair, tail, and only proportions and colors change between a dachshund and a greyhound. TwistCraft already has buildable body plans with every twist and lock worked out. Your job is only to pick the plan that fits the subject best and set its proportions and colors from the description and/or reference image. Return ONLY the JSON requested.
+function planSystemPrompt(families: PlanFamily[]): string {
+  return `You are a professional balloon twister. A twister designs from a BODY PLAN: a dog is snout, ear pair, neck, front leg pair, body, back leg pair, tail, and only proportions and colors change between a dachshund and a greyhound. TwistCraft has body-plan families: the same subject as a beginner, intermediate and advanced recipe, with every twist and lock already worked out. Your job is only to pick the family that fits the subject best and set its proportions and colors from the description and/or reference image. Return ONLY the JSON requested.
 
-Body plans available:
-${plans}
+Families available:
+${families.map(familySummary).join("\n")}
 
-Rules: give a length for every non-fixed part, within its allowed range; keep a pair's or a group's length as one number (both legs are the same). Match the real animal or object: long body and short legs for a dachshund, long neck for a giraffe, big ears for a bunny. The sum of part lengths on one balloon must stay under about 46" for a 260 and 38" for a 160 or 360 (lock pairs count twice, folded leg groups count every bubble). Pick balloon colors from this latex palette by exact name: ${TWISTER_COLORS.map((c) => c.name).join(", ")}. Keep the plan's balloon gauges unless the subject clearly wants a chunkier (360) or finer (160) balloon.`;
+Rules: give one length per part name (it applies to that part in every tier, scaled); stay within the allowed range. Match the real animal or object: long body and short legs for a dachshund, long neck for a giraffe, big ears for a bunny. Keep the total modest: the parts on one balloon must fit in about 46" for a 260 and 38" for a 160 or 360 (a pair counts twice). Pick balloon colors from this latex palette by exact name: ${TWISTER_COLORS.map((c) => c.name).join(", ")}. Keep the plan's balloon gauges unless the subject clearly wants a chunkier (360) or finer (160) balloon.`;
 }
 
 export async function generatePlanWithClaude(req: AiPlanRequest): Promise<AiPlanResult> {
-  if (req.archetypes.length === 0) throw new Error("No body plans are available.");
+  const families = groupFamilies(req.archetypes);
+  if (families.length === 0) throw new Error("No body plans are available.");
   const client = new Anthropic({ apiKey: req.apiKey.trim(), dangerouslyAllowBrowser: true });
   const content: Anthropic.ContentBlockParam[] = [];
   if (req.imageBase64) {
@@ -511,17 +550,17 @@ export async function generatePlanWithClaude(req: AiPlanRequest): Promise<AiPlan
   }
   const text = req.prompt.trim()
     ? req.imageBase64
-      ? `Pick a body plan and proportions for this subject. The twister describes it as: "${req.prompt.trim()}". Use the image for proportions, pose and colors.`
-      : `Pick a body plan and proportions for: "${req.prompt.trim()}".`
-    : "Pick a body plan, proportions and colors for the subject of this image.";
+      ? `Pick a body-plan family and proportions for this subject. The twister describes it as: "${req.prompt.trim()}". Use the image for proportions, pose and colors.`
+      : `Pick a body-plan family and proportions for: "${req.prompt.trim()}".`
+    : "Pick a body-plan family, proportions and colors for the subject of this image.";
   content.push({ type: "text", text });
 
   const response = await client.messages.create({
     model: req.model,
     max_tokens: 2000,
-    system: planSystemPrompt(req.archetypes),
+    system: planSystemPrompt(families),
     messages: [{ role: "user", content }],
-    output_config: { format: { type: "json_schema", schema: planSchema(req.archetypes) } },
+    output_config: { format: { type: "json_schema", schema: planSchema(families) } },
   });
   if (response.stop_reason === "refusal") {
     const why = response.stop_details?.type === "refusal" ? response.stop_details.explanation : "";
@@ -534,7 +573,7 @@ export async function generatePlanWithClaude(req: AiPlanRequest): Promise<AiPlan
   } catch {
     throw new Error("The model returned something that is not valid JSON. Try again.");
   }
-  const built = planAnswerToDesigns(parsed, req.archetypes, req.prompt);
+  const built = planAnswerToDesigns(parsed, families, req.prompt);
   return {
     ...built,
     model: response.model,
@@ -542,44 +581,57 @@ export async function generatePlanWithClaude(req: AiPlanRequest): Promise<AiPlan
   };
 }
 
-/** Validate a plan answer against the available plans and build the tiers. Pure, used by tests. */
-export function planAnswerToDesigns(
-  out: AiPlanOut,
-  archetypes: Archetype[],
-  prompt: string
-): Omit<AiPlanResult, "model" | "usage"> {
+/** Validate a plan answer against the available families and build the three tiers. Pure, used by tests. */
+export function planAnswerToDesigns(out: AiPlanOut, families: PlanFamily[], prompt: string): Omit<AiPlanResult, "model" | "usage"> {
   const warnings: string[] = [];
-  const plan = archetypes.find((a) => a.id === out.planId) ?? archetypes[0];
-  if (plan.id !== out.planId) warnings.push(`Unknown plan "${out.planId}"; used ${plan.name}.`);
-  const settings: ArchetypeBuildSettings = { partLengths: {}, balloons: {}, title: String(out.title || out.subject || prompt || plan.name) };
-  plan.parts.forEach((p) => {
-    const given = Array.isArray(out.parts) ? out.parts.find((x) => x && x.id === p.id) : undefined;
-    const v = given && Number.isFinite(given.lengthInches) ? given.lengthInches : p.templateLength;
-    settings.partLengths[p.id] = p.fixed ? p.templateLength : q(clamp(v, p.minLength, p.maxLength));
+  const family = families.find((f) => f.key === out.familyKey) ?? families[0];
+  if (family.key !== out.familyKey) warnings.push(`Unknown family "${out.familyKey}"; used ${family.name}.`);
+  let settings: FamilyBuildSettings = { ...defaultFamilySettings(family), title: String(out.title || out.subject || prompt || family.name) };
+
+  // Part lengths by name: set on the first tier that has the part; the family carries the proportion to the rest
+  const parts = familyParts(family);
+  (Array.isArray(out.parts) ? out.parts : []).forEach((given) => {
+    if (!given || !Number.isFinite(given.lengthInches)) return;
+    const fp = parts.find((p) => p.key === partKey(String(given.part ?? "")));
+    if (!fp) return;
+    const plan = family.tiers[fp.tiers[0] as ComplexityLevel]!;
+    settings = setFamilyPartLength(family, settings, plan.id, fp.ref.id, q(clamp(given.lengthInches, fp.ref.minLength, fp.ref.maxLength)));
   });
-  plan.balloons.forEach((b) => {
-    const given = Array.isArray(out.balloons) ? out.balloons.find((x) => x && x.id === b.id) : undefined;
-    const size: BalloonSize = given && (given.size === "160" || given.size === "360" || given.size === "260") ? given.size : b.size;
-    const snapped = given ? snapColor(String(given.colorName ?? "")) : { hex: b.color, colorName: b.colorName };
+
+  // Balloons by position: set on the tier with the most balloons; the family carries color (and gauge where it agrees) across
+  const widest = [...family.plans].sort((a, b) => b.balloons.length - a.balloons.length)[0];
+  (Array.isArray(out.balloons) ? out.balloons : []).forEach((given) => {
+    const idx = Number.isInteger(given?.position) ? given.position - 1 : -1;
+    const target = widest.balloons[idx];
+    if (!target) return;
+    const size: BalloonSize = given.size === "160" || given.size === "360" || given.size === "260" ? given.size : target.size;
+    const snapped = snapColor(String(given.colorName ?? ""));
     const pack = matchCatalogItem(catalog, size, snapped.colorName);
-    settings.balloons[b.id] = { color: pack?.hex ?? snapped.hex, colorName: pack ? pack.color : snapped.colorName, size };
+    settings = setFamilyBalloon(family, settings, widest.id, target.id, { color: pack?.hex ?? snapped.hex, colorName: pack ? pack.color : snapped.colorName, size });
   });
-  // Scale the parts of any balloon the model made too long, so the build always fits
-  const probe = applyBuildSettings(plan, settings);
-  buildAirUse(probe.balloons, probe.bubbles).forEach((u) => {
-    if (!u.over) return;
-    const factor = (u.capacity - 1) / u.used;
-    plan.parts.forEach((p) => {
-      if (p.fixed || plan.bubbles[p.bubbleIndices[0]]?.balloonId !== u.balloon.id) return;
-      settings.partLengths[p.id] = q(Math.max(p.minLength, settings.partLengths[p.id] * factor));
+
+  // Scale the parts of any balloon the model made too long, per tier, so every build fits
+  family.plans.forEach((plan) => {
+    const ps = settings.byPlan[plan.id];
+    const probe = applyBuildSettings(plan, ps);
+    buildAirUse(probe.balloons, probe.bubbles).forEach((u) => {
+      if (!u.over) return;
+      const factor = (u.capacity - 1) / u.used;
+      const partLengths = { ...ps.partLengths };
+      plan.parts.forEach((p) => {
+        if (p.fixed || plan.bubbles[p.bubbleIndices[0]]?.balloonId !== u.balloon.id) return;
+        partLengths[p.id] = q(Math.max(p.minLength, partLengths[p.id] * factor));
+      });
+      settings = { ...settings, byPlan: { ...settings.byPlan, [plan.id]: { ...ps, partLengths } } };
+      warnings.push(`${plan.name}: ${u.balloon.name} was over-length; its parts were scaled to fit.`);
     });
-    warnings.push(`${u.balloon.name} was over-length; its parts were scaled to fit.`);
   });
-  const designs = buildDesignsFromArchetype(plan, settings);
-  (Object.keys(designs) as ComplexityLevel[]).forEach((t) => {
+
+  const designs = buildDesignsFromFamily(family, settings);
+  TIERS.forEach((t) => {
     designs[t].sourceType = "ai";
     designs[t].sourcePrompt = prompt;
-    designs[t].description = `${settings.title}: ${String(out.reason || `built from the ${plan.name} plan`)}`;
+    designs[t].description = `${settings.title}: ${String(out.reason || `built from the ${planForTier(family, t).name} plan`)}`;
   });
-  return { designs, subject: String(out.subject || settings.title), warnings, plan, reason: String(out.reason ?? "") };
+  return { designs, subject: String(out.subject || settings.title), warnings, family, reason: String(out.reason ?? "") };
 }

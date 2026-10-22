@@ -185,7 +185,7 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
           const label = result.subject || effectivePrompt;
           onDesignsGenerated(result.designs, label, img?.previewUrl);
           setStatus(
-            `Built “${label}” on the ${result.plan.name} plan with ${modelLabel} (${result.usage.input + result.usage.output} tokens).` +
+            `Built “${label}” on the ${result.family.name} body plan with ${modelLabel} (${result.usage.input + result.usage.output} tokens).` +
               (result.reason ? ` ${result.reason}` : "") +
               (result.warnings.length ? ` ${result.warnings.join(" ")}` : "")
           );
