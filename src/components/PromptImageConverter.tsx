@@ -4,8 +4,9 @@ import React, { useRef, useState } from "react";
 import { ChevronDown, ChevronUp, KeyRound, Sparkles } from "lucide-react";
 import { ComplexityLevel, FullDesign } from "@/types/balloon";
 import { findOrGenerateDesigns } from "@/lib/balloonPresets";
-import { generateDesignsWithClaude } from "@/lib/aiDesigner";
+import { generateDesignsWithClaude, generatePlanWithClaude } from "@/lib/aiDesigner";
 import { AI_MODELS, AiSettings, getAiSettings, setAiSettings } from "@/lib/aiSettings";
+import { BUILT_IN_ARCHETYPES, listCustomArchetypes } from "@/lib/archetypes";
 
 interface PromptImageConverterProps {
   onDesignsGenerated: (
@@ -171,20 +172,33 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
     try {
       if (hasKey) {
         const modelLabel = AI_MODELS.find((m) => m.id === ai.model)?.label ?? ai.model;
-        setStatus(img ? `${modelLabel} is studying the photo and designing three tiers…` : `${modelLabel} is designing three tiers…`);
-        const result = await generateDesignsWithClaude({
+        const common = {
           apiKey: ai.apiKey,
           model: ai.model,
           prompt: effectivePrompt,
           imageBase64: img ? img.previewUrl.split(",")[1] : undefined,
-          imageMediaType: "image/jpeg",
-        });
-        const label = result.subject || effectivePrompt;
-        onDesignsGenerated(result.designs, label, img?.previewUrl);
-        setStatus(
-          `Designed “${label}” with ${modelLabel} (${result.usage.input + result.usage.output} tokens).` +
-            (result.warnings.length ? ` ${result.warnings.join(" ")}` : "")
-        );
+          imageMediaType: "image/jpeg" as const,
+        };
+        if (ai.method === "plan") {
+          setStatus(img ? `${modelLabel} is studying the photo and picking a body plan…` : `${modelLabel} is picking a body plan…`);
+          const result = await generatePlanWithClaude({ ...common, archetypes: [...listCustomArchetypes(), ...BUILT_IN_ARCHETYPES] });
+          const label = result.subject || effectivePrompt;
+          onDesignsGenerated(result.designs, label, img?.previewUrl);
+          setStatus(
+            `Built “${label}” on the ${result.plan.name} plan with ${modelLabel} (${result.usage.input + result.usage.output} tokens).` +
+              (result.reason ? ` ${result.reason}` : "") +
+              (result.warnings.length ? ` ${result.warnings.join(" ")}` : "")
+          );
+        } else {
+          setStatus(img ? `${modelLabel} is studying the photo and designing three tiers…` : `${modelLabel} is designing three tiers…`);
+          const result = await generateDesignsWithClaude(common);
+          const label = result.subject || effectivePrompt;
+          onDesignsGenerated(result.designs, label, img?.previewUrl);
+          setStatus(
+            `Designed “${label}” with ${modelLabel} (${result.usage.input + result.usage.output} tokens).` +
+              (result.warnings.length ? ` ${result.warnings.join(" ")}` : "")
+          );
+        }
       } else {
         setStatus("Building three tiers from the built-in templates…");
         await new Promise((r) => setTimeout(r, 40));
@@ -389,10 +403,37 @@ export const PromptImageConverter: React.FC<PromptImageConverterProps> = ({
         {settingsOpen && (
           <div className="space-y-3 border-t border-slate-800 px-3 py-3">
             <p className="text-[11px] leading-snug text-slate-400">
-              With an Anthropic API key, the model looks at your photo and description and designs real bubble
-              sequences in the app&apos;s schema. The key is stored only in this browser and sent straight to the
-              Claude API from here. You pay per generation on your own account.
+              With an Anthropic API key, the model looks at your photo and description. The key is stored only in
+              this browser and sent straight to the Claude API from here. You pay per generation on your own account.
             </p>
+            <div>
+              <span className="label">Design method</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    ["plan", "Body plan", "The model picks one of the body plans (built-in and your saved ones) and sets proportions and colors; the builder makes the geometry, so it always holds. Cheapest and most reliable."],
+                    ["freeform", "Freeform geometry", "The model writes the whole bubble sequence itself: bends, turns, locks, three tiers. More variety, rougher results."],
+                  ] as const
+                ).map(([id, label, note]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => updateAi({ method: id })}
+                    className={`rounded-lg border px-2.5 py-1 text-xs font-semibold ${
+                      ai.method === id ? "border-amber-400 bg-amber-400/15 text-amber-200" : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"
+                    }`}
+                    title={note}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-1 text-[11px] text-slate-500">
+                {ai.method === "plan"
+                  ? "Picks a body plan and its proportions from the photo or description. Save your own one- or two-balloon designs as plans and the model can use those too."
+                  : "Writes the bubble geometry directly. Use when no body plan fits the subject."}
+              </div>
+            </div>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-12">
               <label className="md:col-span-7">
                 <span className="label">API key</span>

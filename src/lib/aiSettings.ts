@@ -4,10 +4,19 @@
  */
 const KEY = "twistcraft.ai.v1";
 
+/**
+ * plan: the model picks a body plan and sets proportions and colors; the builder makes the geometry.
+ * freeform: the model writes the bubble sequence itself (bends, turns, locks).
+ */
+export type AiMethod = "plan" | "freeform";
+
 export interface AiSettings {
   apiKey: string;
   model: string;
+  method: AiMethod;
 }
+
+export const DEFAULT_AI_METHOD: AiMethod = "plan";
 
 export const AI_MODELS: Array<{ id: string; label: string; note: string }> = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", note: "Recommended · about 2¢ per design" },
@@ -26,16 +35,17 @@ function canStore(): boolean {
 }
 
 export function getAiSettings(): AiSettings {
-  if (!canStore()) return { apiKey: "", model: DEFAULT_AI_MODEL };
+  if (!canStore()) return { apiKey: "", model: DEFAULT_AI_MODEL, method: DEFAULT_AI_METHOD };
   try {
     const raw = window.localStorage.getItem(KEY);
     const parsed = raw ? (JSON.parse(raw) as Partial<AiSettings>) : {};
     return {
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
       model: AI_MODELS.some((m) => m.id === parsed.model) ? (parsed.model as string) : DEFAULT_AI_MODEL,
+      method: parsed.method === "freeform" ? "freeform" : DEFAULT_AI_METHOD,
     };
   } catch {
-    return { apiKey: "", model: DEFAULT_AI_MODEL };
+    return { apiKey: "", model: DEFAULT_AI_MODEL, method: DEFAULT_AI_METHOD };
   }
 }
 

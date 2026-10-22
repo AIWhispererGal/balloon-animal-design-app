@@ -5,6 +5,7 @@ import { buildDesign } from "./balloonPresets";
 import { autoStabilizeSculpture, defaultDiameterForSize } from "./balloonLayout";
 import { Catalog, matchCatalogItem } from "./recipeMath";
 import catalogJson from "@/data/balloonCatalog.json";
+import { Archetype, ArchetypeBuildSettings, buildAirUse, applyBuildSettings, buildDesignsFromArchetype } from "./archetypes";
 
 /**
  * AI design engine: sends the description and/or reference image to Claude and
@@ -421,3 +422,164 @@ function tierToDesign(
 }
 /** Exposed for tests: converts one tier of a model answer without calling the API */
 export const __test_tierToDesign = tierToDesign;
+
+/* ====================================================================
+ * Plan-based design: the model picks a body plan and sets proportions.
+ * The builder in archetypes.ts makes the geometry, so the result always
+ * holds; the model only answers the questions a vision model is good at.
+ * ==================================================================== */
+
+export interface AiPlanOut {
+  subject: string;
+  planId: string;
+  title: string;
+  reason: string;
+  parts: Array<{ id: string; lengthInches: number }>;
+  balloons: Array<{ id: string; colorName: string; size: "160" | "260" | "360" }>;
+}
+
+export interface AiPlanRequest extends AiDesignRequest {
+  archetypes: Archetype[];
+}
+
+export interface AiPlanResult extends AiDesignResult {
+  plan: Archetype;
+  reason: string;
+}
+
+const partSummary = (a: Archetype) =>
+  a.parts
+    .map((p) => (p.fixed ? `${p.id} "${p.label}" (fixed pinch)` : `${p.id} "${p.label}"${p.kind === "pair" ? " (lock pair)" : p.kind === "group" ? " (folded group)" : ""}: default ${p.templateLength}", allowed ${p.minLength}-${p.maxLength}"`))
+    .join("; ");
+
+function planSchema(archetypes: Archetype[]) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["subject", "planId", "title", "reason", "parts", "balloons"],
+    properties: {
+      subject: { type: "string", description: "What the sculpture is, e.g. 'Dachshund'" },
+      planId: { type: "string", enum: archetypes.map((a) => a.id), description: "The body plan to build from" },
+      title: { type: "string", description: "Short design title" },
+      reason: { type: "string", description: "One sentence: why this plan and these proportions fit the subject" },
+      parts: {
+        type: "array",
+        description: "Length for every non-fixed part of the chosen plan, by part id",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "lengthInches"],
+          properties: { id: { type: "string" }, lengthInches: { type: "number" } },
+        },
+      },
+      balloons: {
+        type: "array",
+        description: "Color and gauge for every balloon of the chosen plan, by balloon id",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "colorName", "size"],
+          properties: {
+            id: { type: "string" },
+            colorName: { type: "string", description: "One of the latex color names given" },
+            size: { type: "string", enum: ["160", "260", "360"] },
+          },
+        },
+      },
+    },
+  };
+}
+
+function planSystemPrompt(archetypes: Archetype[]): string {
+  const plans = archetypes
+    .map((a) => `- id "${a.id}": ${a.name}. ${a.description} Balloons: ${a.balloons.map((b) => `${b.id} (${b.size}, ${b.name})`).join(", ")}. Parts: ${partSummary(a)}.`)
+    .join("\n");
+  return `You are a professional balloon twister. A twister designs from a BODY PLAN: a dog is snout, ear pair, neck, front leg pair, body, back leg pair, tail, and only proportions and colors change between a dachshund and a greyhound. TwistCraft already has buildable body plans with every twist and lock worked out. Your job is only to pick the plan that fits the subject best and set its proportions and colors from the description and/or reference image. Return ONLY the JSON requested.
+
+Body plans available:
+${plans}
+
+Rules: give a length for every non-fixed part, within its allowed range; keep a pair's or a group's length as one number (both legs are the same). Match the real animal or object: long body and short legs for a dachshund, long neck for a giraffe, big ears for a bunny. The sum of part lengths on one balloon must stay under about 46" for a 260 and 38" for a 160 or 360 (lock pairs count twice, folded leg groups count every bubble). Pick balloon colors from this latex palette by exact name: ${TWISTER_COLORS.map((c) => c.name).join(", ")}. Keep the plan's balloon gauges unless the subject clearly wants a chunkier (360) or finer (160) balloon.`;
+}
+
+export async function generatePlanWithClaude(req: AiPlanRequest): Promise<AiPlanResult> {
+  if (req.archetypes.length === 0) throw new Error("No body plans are available.");
+  const client = new Anthropic({ apiKey: req.apiKey.trim(), dangerouslyAllowBrowser: true });
+  const content: Anthropic.ContentBlockParam[] = [];
+  if (req.imageBase64) {
+    content.push({ type: "image", source: { type: "base64", media_type: req.imageMediaType ?? "image/jpeg", data: req.imageBase64 } });
+  }
+  const text = req.prompt.trim()
+    ? req.imageBase64
+      ? `Pick a body plan and proportions for this subject. The twister describes it as: "${req.prompt.trim()}". Use the image for proportions, pose and colors.`
+      : `Pick a body plan and proportions for: "${req.prompt.trim()}".`
+    : "Pick a body plan, proportions and colors for the subject of this image.";
+  content.push({ type: "text", text });
+
+  const response = await client.messages.create({
+    model: req.model,
+    max_tokens: 2000,
+    system: planSystemPrompt(req.archetypes),
+    messages: [{ role: "user", content }],
+    output_config: { format: { type: "json_schema", schema: planSchema(req.archetypes) } },
+  });
+  if (response.stop_reason === "refusal") {
+    const why = response.stop_details?.type === "refusal" ? response.stop_details.explanation : "";
+    throw new Error(`The model declined this request${why ? `: ${why}` : "."}`);
+  }
+  const raw = response.content.find((b) => b.type === "text")?.text ?? "";
+  let parsed: AiPlanOut;
+  try {
+    parsed = JSON.parse(raw) as AiPlanOut;
+  } catch {
+    throw new Error("The model returned something that is not valid JSON. Try again.");
+  }
+  const built = planAnswerToDesigns(parsed, req.archetypes, req.prompt);
+  return {
+    ...built,
+    model: response.model,
+    usage: { input: response.usage.input_tokens, output: response.usage.output_tokens },
+  };
+}
+
+/** Validate a plan answer against the available plans and build the tiers. Pure, used by tests. */
+export function planAnswerToDesigns(
+  out: AiPlanOut,
+  archetypes: Archetype[],
+  prompt: string
+): Omit<AiPlanResult, "model" | "usage"> {
+  const warnings: string[] = [];
+  const plan = archetypes.find((a) => a.id === out.planId) ?? archetypes[0];
+  if (plan.id !== out.planId) warnings.push(`Unknown plan "${out.planId}"; used ${plan.name}.`);
+  const settings: ArchetypeBuildSettings = { partLengths: {}, balloons: {}, title: String(out.title || out.subject || prompt || plan.name) };
+  plan.parts.forEach((p) => {
+    const given = Array.isArray(out.parts) ? out.parts.find((x) => x && x.id === p.id) : undefined;
+    const v = given && Number.isFinite(given.lengthInches) ? given.lengthInches : p.templateLength;
+    settings.partLengths[p.id] = p.fixed ? p.templateLength : q(clamp(v, p.minLength, p.maxLength));
+  });
+  plan.balloons.forEach((b) => {
+    const given = Array.isArray(out.balloons) ? out.balloons.find((x) => x && x.id === b.id) : undefined;
+    const size: BalloonSize = given && (given.size === "160" || given.size === "360" || given.size === "260") ? given.size : b.size;
+    const snapped = given ? snapColor(String(given.colorName ?? "")) : { hex: b.color, colorName: b.colorName };
+    const pack = matchCatalogItem(catalog, size, snapped.colorName);
+    settings.balloons[b.id] = { color: pack?.hex ?? snapped.hex, colorName: pack ? pack.color : snapped.colorName, size };
+  });
+  // Scale the parts of any balloon the model made too long, so the build always fits
+  const probe = applyBuildSettings(plan, settings);
+  buildAirUse(probe.balloons, probe.bubbles).forEach((u) => {
+    if (!u.over) return;
+    const factor = (u.capacity - 1) / u.used;
+    plan.parts.forEach((p) => {
+      if (p.fixed || plan.bubbles[p.bubbleIndices[0]]?.balloonId !== u.balloon.id) return;
+      settings.partLengths[p.id] = q(Math.max(p.minLength, settings.partLengths[p.id] * factor));
+    });
+    warnings.push(`${u.balloon.name} was over-length; its parts were scaled to fit.`);
+  });
+  const designs = buildDesignsFromArchetype(plan, settings);
+  (Object.keys(designs) as ComplexityLevel[]).forEach((t) => {
+    designs[t].sourceType = "ai";
+    designs[t].sourcePrompt = prompt;
+    designs[t].description = `${settings.title}: ${String(out.reason || `built from the ${plan.name} plan`)}`;
+  });
+  return { designs, subject: String(out.subject || settings.title), warnings, plan, reason: String(out.reason ?? "") };
+}
