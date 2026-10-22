@@ -110,6 +110,8 @@ interface ThreeBalloonViewerProps {
   selectedJointIds?: number[];
   onSelectJoint?: (jointId: number, additive?: boolean) => void;
   onTwistJoints?: () => void;
+  /** Join two specific joints (used by join mode) */
+  onJoinJointPair?: (jointA: number, jointB: number) => void;
   onClearJointSelection?: () => void;
   selectedJointAnchor?: JointAnchorOption | null;
   onReleaseTwists?: (indices: number[]) => void;
@@ -240,6 +242,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       selectedJointIds,
       onSelectJoint,
       onTwistJoints,
+      onJoinJointPair,
       onClearJointSelection,
       selectedJointAnchor = null,
       onReleaseTwists,
@@ -274,6 +277,8 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
     const pickMeshesRef = useRef<THREE.Object3D[]>([]);
     const gizmoMeshesRef = useRef<THREE.Object3D[]>([]);
     const jointMeshesRef = useRef<THREE.Object3D[]>([]);
+    /** Untwisted balloon tubes and knots: clicking one makes that balloon active */
+    const balloonPickRef = useRef<THREE.Object3D[]>([]);
     const bubbleMeshesRef = useRef<Map<number, THREE.Mesh[]>>(new Map());
     const activeMatsRef = useRef<THREE.MeshPhysicalMaterial[]>([]);
     const dangerRingsRef = useRef<THREE.Mesh[]>([]);
@@ -289,6 +294,14 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
     const [hudOpen, setHudOpen] = useState(true);
     const [paletteOpen, setPaletteOpen] = useState(true);
     const [splitMode, setSplitMode] = useState(false);
+    /** Join mode: click a twist on one balloon, then a twist on another; they are joined */
+    const [joinMode, setJoinMode] = useState(false);
+    // Any edit ends join mode (the join itself is an edit)
+    const [joinModeBubbles, setJoinModeBubbles] = useState(bubbles);
+    if (bubbles !== joinModeBubbles) {
+      setJoinModeBubbles(bubbles);
+      if (joinMode) setJoinMode(false);
+    }
     const [dragReadout, setDragReadout] = useState<string | null>(null);
     const [cursorStyle, setCursorStyle] = useState<string>("grab");
     const [dropPreview, setDropPreview] = useState<{
@@ -313,9 +326,14 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       splitMode,
       onSelectBubble,
       onSelectJoint,
+      onJoinJointPair,
+      onSetActiveBalloon,
+      onClearSelection,
       onUpdateBubble,
       onAddTwistPreset,
       onSplitBubble,
+      joinMode,
+      selectedJointIds,
     });
     const layoutSnapshot = useMemo(
       () => computeBalloonLayout(balloons, bubbles, { releasedHands }),
@@ -331,9 +349,14 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         splitMode,
         onSelectBubble,
         onSelectJoint,
+        onJoinJointPair,
+        onSetActiveBalloon,
+        onClearSelection,
         onUpdateBubble,
         onAddTwistPreset,
         onSplitBubble,
+        joinMode,
+        selectedJointIds,
       };
       layoutSnapshotRef.current = layoutSnapshot;
     });
@@ -466,7 +489,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.06;
       renderer.shadowMap.enabled = true;
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.shadowMap.type = THREE.PCFShadowMap;
       container.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
@@ -664,7 +687,10 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
           setCursorStyle(k === "add_after" ? "copy" : "ew-resize");
           return;
         }
-        if (raycaster.intersectObjects(jointMeshesRef.current, false)[0]) {
+        if (
+          raycaster.intersectObjects(jointMeshesRef.current, false)[0] ||
+          raycaster.intersectObjects(balloonPickRef.current, false)[0]
+        ) {
           setCursorStyle("pointer");
           return;
         }
@@ -692,13 +718,38 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         // Joint markers win over bubbles: they are small and sit inside the seams
         const jHit = raycaster.intersectObjects(jointMeshesRef.current, false)[0];
         if (jHit && !latestRef.current.splitMode) {
-          latestRef.current.onSelectJoint?.(jHit.object.userData.jointId as number, e.shiftKey || e.metaKey || e.ctrlKey);
+          const jointId = jHit.object.userData.jointId as number;
+          if (latestRef.current.joinMode) {
+            const pending = latestRef.current.selectedJointIds?.[0];
+            if (pending !== undefined && pending !== jointId && latestRef.current.onJoinJointPair) {
+              latestRef.current.onJoinJointPair(pending, jointId);
+              setJoinMode(false);
+            } else {
+              latestRef.current.onSelectJoint?.(jointId, false);
+            }
+            return;
+          }
+          latestRef.current.onSelectJoint?.(jointId, e.shiftKey || e.metaKey || e.ctrlKey);
           return;
         }
 
         const hits = raycaster.intersectObjects(pickMeshesRef.current, false);
         const hit = hits.find((h) => h.object.userData.bubbleIndex !== undefined);
-        if (!hit) return;
+        if (!hit) {
+          // Clicked the untwisted part or knot of a balloon: make it the active balloon
+          const bHit = raycaster.intersectObjects(balloonPickRef.current, false)[0];
+          if (bHit) {
+            const balloonId = bHit.object.userData.balloonId as string;
+            latestRef.current.onSetActiveBalloon?.(balloonId);
+            const bubbles = latestRef.current.bubbles;
+            let lastOnBal = -1;
+            bubbles.forEach((b, i) => {
+              if (b.balloonId === balloonId) lastOnBal = i;
+            });
+            if (lastOnBal >= 0) latestRef.current.onSelectBubble?.(lastOnBal, false);
+          }
+          return;
+        }
         const idx = hit.object.userData.bubbleIndex as number;
 
         // Split mode: click a point along the bubble to put a new twist there
@@ -728,12 +779,13 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       renderer.domElement.addEventListener("pointermove", onPointerMove);
       renderer.domElement.addEventListener("pointerup", onPointerUp);
 
-      const clock = new THREE.Clock();
+      const timer = new THREE.Timer();
       let running = true;
       let raf = 0;
       const animate = () => {
         if (!running) return;
-        const t = clock.getElapsedTime();
+        timer.update();
+        const t = timer.getElapsed();
         activeMatsRef.current.forEach((m) => {
           m.emissiveIntensity = 0.42 + 0.26 * Math.sin(t * 4.2);
         });
@@ -964,6 +1016,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       clearGroup(modelGroup);
       clearGroup(ghostGroup);
       pickMeshesRef.current = [];
+      balloonPickRef.current = [];
       bubbleMeshesRef.current = new Map();
       activeMatsRef.current = [];
       dangerRingsRef.current = [];
@@ -1105,17 +1158,19 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         const knot = new THREE.Mesh(new THREE.TorusGeometry(r * 0.36, 0.095, 10, 20), baseLatexMat(bal.color));
         knot.position.copy(knotPos);
         knot.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), firstDir);
+        knot.userData.balloonId = bal.id;
         modelGroup.add(knot);
+        balloonPickRef.current.push(knot);
 
         const formedL = bLayouts.filter((l) => vis.formed.has(l.index));
         const lastFormed = formedL[formedL.length - 1];
         const lastLayout = bLayouts[bLayouts.length - 1];
+        // Only a cut / tied-off tail ends the balloon; after a lock-back or a
+        // joint join the balloon keeps going from the merged joint.
         const tiedOff =
           lastLayout &&
           formedL.length === bLayouts.length &&
-          (lastLayout.bubble.twistType === "cut_tail" ||
-            lastLayout.bubble.twistType === "cut_tail_bubbles" ||
-            lastLayout.bubble.lockToBubbleStart !== undefined);
+          (lastLayout.bubble.twistType === "cut_tail" || lastLayout.bubble.twistType === "cut_tail_bubbles");
 
         const origin = lastFormed ? tv(lastFormed.chainEnd) : knotPos.clone();
         const dirR = lastFormed ? tv(lastFormed.chainDir) : firstDir.clone();
@@ -1135,11 +1190,14 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
             baseLatexMat(bal.color)
           );
           remMesh.castShadow = true;
-          remMesh.userData.untwistedBalloonId = bal.id;
+          remMesh.userData.balloonId = bal.id;
           modelGroup.add(remMesh);
+          balloonPickRef.current.push(remMesh);
           const cap = new THREE.Mesh(new THREE.SphereGeometry(r * 0.92, 16, 12), baseLatexMat(bal.color));
           cap.position.copy(p3);
+          cap.userData.balloonId = bal.id;
           modelGroup.add(cap);
+          balloonPickRef.current.push(cap);
           tailFrom = p3;
           boundsPts.push(p0, p3);
         } else if (!tiedOff && lastFormed) {
@@ -1390,15 +1448,19 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       };
     }, [layoutSnapshot, vis, multiSelection, selectedBubbleIndex, bubbles, releasedHands, wireframe]);
 
-    /* Escape leaves split mode */
+    /* Escape leaves split / join mode */
     useEffect(() => {
-      if (!splitMode) return;
+      if (!splitMode && !joinMode) return;
       const onKey = (e: KeyboardEvent) => {
-        if (e.key === "Escape") setSplitMode(false);
+        if (e.key === "Escape") {
+          setSplitMode(false);
+          setJoinMode(false);
+        }
       };
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
-    }, [splitMode]);
+    }, [splitMode, joinMode]);
+
 
     /* ---------------- drop-target highlight without a rebuild ---------------- */
     useEffect(() => {
@@ -1508,7 +1570,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         <div ref={containerRef} style={{ cursor: cursorStyle }} className="h-full min-h-[540px] w-full" />
 
         {/* transient readouts */}
-        {(dragReadout || dropPreview || splitMode) && (
+        {(dragReadout || dropPreview || splitMode || joinMode) && (
           <div className="hud pointer-events-none absolute left-[170px] top-14 z-30 max-w-[400px] px-3.5 py-1.5 font-mono text-xs text-cyan-100">
             {dragReadout
               ? dragReadout
@@ -1518,7 +1580,11 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
                   ? `Convert #${dropPreview.bubbleIndex + 1} to ${dropPreview.preset.replace(/_/g, " ")}`
                   : `Insert ${dropPreview.preset.replace(/_/g, " ")} after #${dropPreview.bubbleIndex + 1} (hold Alt to convert)`
                 : `Drop to add ${dropPreview.preset.replace(/_/g, " ")} at the end of the balloon`
-              : "Split mode: click a point on any bubble to put a twist there · Esc to exit"}
+              : splitMode
+              ? "Split: click a point on any bubble to put a twist there · Esc to exit"
+              : (selectedJointIds?.length ?? 0) === 1
+              ? "Join: now click the second twist (on this or another balloon) · Esc to cancel"
+              : "Join: click the first twist (the small marker at any joint) · Esc to cancel"}
           </div>
         )}
 
@@ -1562,12 +1628,29 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
             </button>
             {onSplitBubble && (
               <button
-                onClick={() => setSplitMode((s) => !s)}
+                onClick={() => {
+                  setJoinMode(false);
+                  setSplitMode((s) => !s);
+                }}
                 className={iconBtn(splitMode)}
-                title="Split mode: click on a bubble where you want a new twist"
+                title="Split: click on a bubble where you want a new twist"
                 disabled={!hasBubbles}
               >
                 <Scissors className="h-4 w-4" />
+              </button>
+            )}
+            {onTwistJoints && (
+              <button
+                onClick={() => {
+                  setSplitMode(false);
+                  onClearJointSelection?.();
+                  setJoinMode((j) => !j);
+                }}
+                className={iconBtn(joinMode)}
+                title="Join: click a twist, then another twist (on any balloon) to twist them together"
+                disabled={!hasBubbles}
+              >
+                <Link2 className="h-4 w-4" />
               </button>
             )}
             <button

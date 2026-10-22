@@ -207,7 +207,14 @@ export default function BalloonAppPage() {
       if (jumpToFocusStep && buildMode === "step" && target !== undefined) {
         setCurrentStepIndex(stepIndexForBubble(updatedDesign, target));
       } else {
-        setCurrentStepIndex((prev) => Math.max(0, Math.min(prev, nextSteps.length - 1)));
+        // Stay on the same step by identity; if the final step was showing, stay on the final step
+        const prevSteps = currentDesign.steps;
+        setCurrentStepIndex((prev) => {
+          if (prev >= prevSteps.length - 1) return Math.max(0, nextSteps.length - 1);
+          const id = prevSteps[prev]?.stepId;
+          const same = id ? nextSteps.findIndex((st) => st.stepId === id) : -1;
+          return same >= 0 ? same : Math.max(0, Math.min(prev, nextSteps.length - 1));
+        });
       }
       return updatedDesign;
     },
@@ -295,15 +302,11 @@ export default function BalloonAppPage() {
     return { ref, label, balloonIds: Array.from(places.keys()) };
   }, [selectedJointIds, placeOfJoint, currentDesign.bubbles, liveSim.layouts]);
 
-  /** Twist the two selected joints together: everything between them closes into a ring. */
-  const handleTwistJoints = useCallback(() => {
-    if (selectedJointIds.length !== 2) {
-      showToast("Select two joints to twist together.");
-      return;
-    }
+  /** Twist two joints together: a ring / lock pair / loop on one balloon, or a joint-to-joint join across balloons. */
+  const twistJointPair = useCallback((jointA: number, jointB: number) => {
     const bubbles = currentDesign.bubbles;
-    const a = placeOfJoint(selectedJointIds[0]);
-    const b = placeOfJoint(selectedJointIds[1]);
+    const a = placeOfJoint(jointA);
+    const b = placeOfJoint(jointB);
     const balloonId = Array.from(a.keys()).find((id) => b.has(id));
     if (!balloonId) {
       // Different balloons: stick the two joints together (joint-to-joint lock)
@@ -325,8 +328,8 @@ export default function BalloonAppPage() {
           return [];
         });
       };
-      const sidesA = sidesOf(selectedJointIds[0]);
-      const sidesB = sidesOf(selectedJointIds[1]);
+      const sidesA = sidesOf(jointA);
+      const sidesB = sidesOf(jointB);
       let pair: [JointSide, JointSide] | null = null;
       for (const sa of sidesA) {
         const sb = sidesB.find((x) => x.balloonId !== sa.balloonId);
@@ -364,7 +367,15 @@ export default function BalloonAppPage() {
     const focus = Array.from({ length: last - first + 1 }, (_, k) => first + k);
     commitDesignState(res.balloons, res.bubbles, focus, true);
     showToast(res.summary);
-  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, liveSim, placeOfJoint, selectedJointIds, showToast]);
+  }, [commitDesignState, currentDesign.balloons, currentDesign.bubbles, liveSim, placeOfJoint, showToast]);
+
+  const handleTwistJoints = useCallback(() => {
+    if (selectedJointIds.length !== 2) {
+      showToast("Select two joints to twist together.");
+      return;
+    }
+    twistJointPair(selectedJointIds[0], selectedJointIds[1]);
+  }, [selectedJointIds, showToast, twistJointPair]);
 
   const handleSelectMany = useCallback((indices: number[]) => {
     setSelectedIndices(indices.length ? indices : [0]);
@@ -987,6 +998,7 @@ export default function BalloonAppPage() {
                   selectedJointIds={selectedJointIds}
                   onSelectJoint={handleSelectJoint}
                   onTwistJoints={handleTwistJoints}
+                  onJoinJointPair={twistJointPair}
                   onClearJointSelection={handleClearJointSelection}
                   selectedJointAnchor={selectedJointAnchor}
                   onReleaseTwists={handleReleaseTwists}
