@@ -10,6 +10,8 @@ export interface AddBalloonRequest {
   size: BalloonSize;
   colorHex: string;
   colorName: string;
+  brand?: string;
+  catalogItemId?: string;
   /** Joint the nozzle knot ties into; null = free-standing balloon */
   attachTo: JointAnchorRef | null;
   /** Start the balloon with one basic bubble so there is something to grab */
@@ -56,7 +58,9 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [size, setSize] = useState<BalloonSize>("260");
-  const [color, setColor] = useState(() => suggestColor(usedColors));
+  const [color, setColor] = useState<{ hex: string; name: string; brand?: string; catalogItemId?: string }>(() =>
+    suggestColor(usedColors)
+  );
   const [attachMode, setAttachMode] = useState<"joint" | "end" | "start" | "free">(
     jointAnchor ? "joint" : bubbles.length > 0 ? "end" : "free"
   );
@@ -102,6 +106,8 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
       size,
       colorHex: color.hex,
       colorName: color.name,
+      brand: color.brand,
+      catalogItemId: color.catalogItemId,
       attachTo:
         attachMode === "joint" && jointAnchor
           ? jointAnchor.ref
@@ -138,7 +144,10 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
                 <button
                   key={sz}
                   type="button"
-                  onClick={() => setSize(sz)}
+                  onClick={() => {
+                    setSize(sz);
+                    setColor((c) => (c.catalogItemId ? { hex: c.hex, name: c.name } : c));
+                  }}
                   className={`seg-item flex-1 font-mono ${size === sz ? "seg-item-active" : ""}`}
                   title={BALLOON_SIZE_DETAILS[sz].description}
                 >
@@ -153,7 +162,12 @@ export const AddBalloonPopover: React.FC<AddBalloonPopoverProps> = ({
             <div className="label">Color</div>
             <ColorPicker
               value={color.hex}
-              valueName={color.name}
+              valueName={color.brand ? `${color.brand} ${color.name}` : color.name}
+              balloonSize={size}
+              catalogItemId={color.catalogItemId}
+              onPickCatalogItem={(item) =>
+                setColor({ hex: item.hex ?? "#64748B", name: item.color, brand: item.brand, catalogItemId: item.id })
+              }
               onChange={(hex, name) => setColor({ hex, name })}
             />
           </div>

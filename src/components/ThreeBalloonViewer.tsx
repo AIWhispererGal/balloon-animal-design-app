@@ -13,6 +13,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import {
+  Axis3d,
   Bird,
   Boxes,
   ChevronDown,
@@ -120,6 +121,9 @@ interface ThreeBalloonViewerProps {
   onUpdateBalloon?: (balloonId: string, updated: Partial<BalloonSpec>) => void;
   activeBalloonId?: string | null;
   onSetActiveBalloon?: (id: string | null) => void;
+  /** Whole-sculpture orientation in degrees [pitch, yaw, roll] */
+  orientation?: [number, number, number];
+  onSetOrientation?: (orientation: [number, number, number] | undefined) => void;
   onApplyAutoFix?: (fix: StabilityAutoFix) => void;
   onAutoStabilizeAll?: () => void;
   showLabels?: boolean;
@@ -251,6 +255,8 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       onUpdateBalloon,
       activeBalloonId,
       onSetActiveBalloon,
+      orientation,
+      onSetOrientation,
       onApplyAutoFix,
       onAutoStabilizeAll,
       showLabels = true,
@@ -296,6 +302,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
     const [splitMode, setSplitMode] = useState(false);
     /** Join mode: click a twist on one balloon, then a twist on another; they are joined */
     const [joinMode, setJoinMode] = useState(false);
+    const [orientOpen, setOrientOpen] = useState(false);
     // Any edit ends join mode (the join itself is an edit)
     const [joinModeBubbles, setJoinModeBubbles] = useState(bubbles);
     if (bubbles !== joinModeBubbles) {
@@ -594,8 +601,8 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
             const b = latestRef.current.bubbles[bIdx];
             const lay = layoutSnapshotRef.current.layouts[bIdx];
             if (!lay) return;
-            const worldDir = tv(lay.dir).normalize();
-            const worldPerp = tv(lay.side).normalize();
+            const worldDir = tv(lay.dir).applyQuaternion(pivot.quaternion).normalize();
+            const worldPerp = tv(lay.side).applyQuaternion(pivot.quaternion).normalize();
             const camDir = new THREE.Vector3();
             camera.getWorldDirection(camDir);
             dragPlane.setFromNormalAndCoplanarPoint(camDir.clone().negate(), gizmoHits[0].point);
@@ -757,7 +764,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
           const lay = layoutSnapshotRef.current.layouts[idx];
           const b = latestRef.current.bubbles[idx];
           if (lay && b) {
-            const local = hit.point.clone().sub(pivot.position);
+            const local = pivot.worldToLocal(hit.point.clone());
             const a = tv(lay.start);
             const bEnd = tv(lay.end);
             const seg = bEnd.clone().sub(a);
@@ -1214,14 +1221,19 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
         }
       });
 
-      /* center sculpture & auto-fit camera when the design changes */
+      /* whole-sculpture orientation, then center & auto-fit camera */
+      const [pitch, yaw, roll] = orientation ?? [0, 0, 0];
+      pivot.rotation.set(THREE.MathUtils.degToRad(pitch), THREE.MathUtils.degToRad(yaw), THREE.MathUtils.degToRad(roll));
+      pivot.updateMatrixWorld(true);
+      const rot = pivot.quaternion.clone();
       const finalBox = new THREE.Box3();
+      const expand = (v: THREE.Vector3) => finalBox.expandByPoint(v.applyQuaternion(rot));
       layouts.forEach((l) => {
-        finalBox.expandByPoint(tv(l.start));
-        finalBox.expandByPoint(tv(l.end));
-        finalBox.expandByPoint(tv(l.mid));
+        expand(tv(l.start));
+        expand(tv(l.end));
+        expand(tv(l.mid));
       });
-      boundsPts.forEach((p) => finalBox.expandByPoint(p));
+      boundsPts.forEach((p) => expand(p.clone()));
       if (!finalBox.isEmpty()) {
         finalBox.expandByScalar(0.8);
         const center = new THREE.Vector3();
@@ -1252,6 +1264,7 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
       showGhost,
       wireframe,
       releasedHands,
+      orientation,
       baseLatexMat,
       buildMesh,
       fitCameraTo,
@@ -1680,6 +1693,61 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
             <button onClick={() => setWireframe((w) => !w)} className={iconBtn(wireframe)} title="Wireframe">
               <Boxes className="h-4 w-4 opacity-70" />
             </button>
+            {onSetOrientation && (
+              <div className="relative">
+                <button
+                  onClick={() => setOrientOpen((o) => !o)}
+                  className={iconBtn(orientOpen || !!orientation)}
+                  title="Orientation: flip or rotate the whole sculpture relative to the ground"
+                >
+                  <Axis3d className="h-4 w-4" />
+                </button>
+                {orientOpen && (
+                  <div className="hud absolute right-0 top-full z-40 mt-1.5 w-[230px] space-y-1 p-2">
+                    <div className="px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Orientation</div>
+                    {(
+                      [
+                        ["Flip upside down", [0, 0, 1], 180],
+                        ["Turn around", [0, 1, 0], 180],
+                        ["Tilt nose up 90°", [0, 0, 1], 90],
+                        ["Tilt nose down 90°", [0, 0, 1], -90],
+                        ["Roll left 90°", [1, 0, 0], 90],
+                        ["Roll right 90°", [1, 0, 0], -90],
+                        ["Turn 90° left", [0, 1, 0], 90],
+                        ["Turn 90° right", [0, 1, 0], -90],
+                      ] as Array<[string, [number, number, number], number]>
+                    ).map(([label, axis, deg]) => (
+                      <button
+                        key={label}
+                        onClick={() => {
+                          const [p0, y0, r0] = orientation ?? [0, 0, 0];
+                          const cur = new THREE.Quaternion().setFromEuler(
+                            new THREE.Euler(THREE.MathUtils.degToRad(p0), THREE.MathUtils.degToRad(y0), THREE.MathUtils.degToRad(r0))
+                          );
+                          const step = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...axis), THREE.MathUtils.degToRad(deg));
+                          const e = new THREE.Euler().setFromQuaternion(step.multiply(cur));
+                          const d = (v: number) => Math.round(THREE.MathUtils.radToDeg(v));
+                          onSetOrientation([d(e.x), d(e.y), d(e.z)]);
+                        }}
+                        className="btn btn-ghost btn-xs w-full justify-start"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => {
+                        onSetOrientation(undefined);
+                        setOrientOpen(false);
+                      }}
+                      disabled={!orientation}
+                      className="btn btn-secondary btn-xs mt-1 w-full"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1981,8 +2049,13 @@ export const ThreeBalloonViewer = forwardRef<ThreeBalloonViewerRef, ThreeBalloon
                 size="sm"
                 value={selBalloon.color}
                 valueName={selBalloon.colorName}
-                label={`${selBalloon.size} ${selBalloon.colorName}`}
-                onChange={(hex, name) => onUpdateBalloon(selBalloon.id, { color: hex, colorName: name })}
+                label={`${selBalloon.size} ${selBalloon.brand ? `${selBalloon.brand} ` : ""}${selBalloon.colorName}`}
+                balloonSize={selBalloon.size}
+                catalogItemId={selBalloon.catalogItemId}
+                onPickCatalogItem={(item) =>
+                  onUpdateBalloon(selBalloon.id, { color: item.hex ?? selBalloon.color, colorName: item.color, brand: item.brand, catalogItemId: item.id })
+                }
+                onChange={(hex, name) => onUpdateBalloon(selBalloon.id, { color: hex, colorName: name, brand: undefined, catalogItemId: undefined })}
               />
             )}
 

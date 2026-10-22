@@ -32,6 +32,10 @@ export interface BalloonSpec {
   size: BalloonSize;
   color: string; // hex code
   colorName: string;
+  /** Manufacturer, when the balloon was picked from the shopping catalog */
+  brand?: string;
+  /** Catalog pack this balloon is bought as (links the design to the shopping recipe) */
+  catalogItemId?: string;
   inflatedLengthInches: number; // e.g. 48"
   tailLengthInches: number; // e.g. 12" (approx 4-6 fingers)
   tailFingers?: number; // e.g. 5 fingers
@@ -192,6 +196,8 @@ export interface FullDesign {
   bubbles: BubbleSpec[];
   steps: StepSpec[];
   annotations?: string[];
+  /** Whole-sculpture orientation in degrees [pitch, yaw, roll], applied in the viewer */
+  orientation?: [number, number, number];
   isPreset?: boolean;
   createdAt?: string;
 }

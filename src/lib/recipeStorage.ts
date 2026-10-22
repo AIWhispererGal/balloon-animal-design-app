@@ -2,11 +2,32 @@ import { Recipe } from "./recipeMath";
 
 const RECIPES_KEY = "twistcraft.recipes.v1";
 const HANDOFF_KEY = "twistcraft.recipe-handoff.v1";
+const CURRENT_KEY = "twistcraft.current-design.v1";
 
-/** What the design page hands to the shopping page: balloons to shop for */
+/** What the design page shares with the shopping page: balloons to shop for */
 export interface RecipeHandoff {
   designTitle: string;
-  balloons: Array<{ size: string; colorName: string; name: string; hex: string }>;
+  balloons: Array<{ size: string; colorName: string; name: string; hex: string; catalogItemId?: string }>;
+}
+
+/** The design currently open in the editor, kept up to date so Shopping can always price it */
+export function setCurrentDesign(h: RecipeHandoff): void {
+  if (!canStore()) return;
+  try {
+    window.localStorage.setItem(CURRENT_KEY, JSON.stringify(h));
+  } catch {
+    // ignore
+  }
+}
+
+export function getCurrentDesign(): RecipeHandoff | null {
+  if (!canStore()) return null;
+  try {
+    const raw = window.localStorage.getItem(CURRENT_KEY);
+    return raw ? (JSON.parse(raw) as RecipeHandoff) : null;
+  } catch {
+    return null;
+  }
 }
 
 function canStore(): boolean {

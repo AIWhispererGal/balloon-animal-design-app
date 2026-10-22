@@ -84,9 +84,29 @@ const COLOR_FAMILIES = [
   [/\b(assorted|assortment|mix|mixed|rainbow|circus|carnival|character|vibrant|special|colors vary)\b/i, "assorted", "#A3A3A3"],
 ];
 
+/** Closer swatches for the most common names; the family hex is the fallback. */
+const EXACT_HEX = {
+  orange: "#F97316", red: "#DC2626", yellow: "#FACC15", lime: "#A3E635", "lime green": "#84CC16",
+  "apple green": "#65A30D", green: "#16A34A", "emerald green": "#059669", "forest green": "#166534",
+  mint: "#6EE7B7", "mint green": "#6EE7B7", teal: "#0D9488", turquoise: "#14B8A6", aqua: "#22D3EE",
+  "caribbean blue": "#0EA5E9", "robins egg blue": "#7DD3FC", "pale blue": "#93C5FD", "sky blue": "#38BDF8",
+  blue: "#2563EB", "royal blue": "#1D4ED8", "dark blue": "#1E3A8A", navy: "#1E3A8A", "sapphire blue": "#1D4ED8",
+  purple: "#7C3AED", violet: "#8B5CF6", lilac: "#C4B5FD", lavender: "#C4B5FD", "spring lilac": "#C4B5FD",
+  plum: "#6B21A8", "plum purple": "#6B21A8", "quartz purple": "#7E22CE", grape: "#6D28D9",
+  pink: "#EC4899", "hot pink": "#DB2777", "bubble gum pink": "#F472B6", magenta: "#D946EF", fuchsia: "#C026D3",
+  blush: "#FBCFE8", "creamy blush": "#FCE7F3", rose: "#F43F5E", "wild raspberry": "#BE185D", cranberry: "#9F1239",
+  white: "#F8FAFC", "white sand": "#F5F5F4", clear: "#E2E8F0", "crystal clear": "#E2E8F0", "diamond clear": "#E2E8F0",
+  ivory: "#FEF3C7", black: "#111827", onyx: "#111827", brown: "#78350F", chocolate: "#5B2C0A", mocha: "#6B4423",
+  "mocha brown": "#6B4423", latte: "#C8A27A", coffee: "#6F4E37", "cameo brown": "#A0785A", tan: "#D2B48C",
+  silver: "#A1A1AA", gold: "#EAB308", "chrome gold": "#EAB308", "chrome silver": "#A1A1AA", "rose gold": "#F4A6A6",
+  copper: "#B45309", champagne: "#F1E2B3", peach: "#FDBA74", coral: "#FB7185", mauve: "#B07CC6", merlot: "#7F1D1D",
+  gray: "#9CA3AF", grey: "#9CA3AF",
+};
+
 function colorFamily(color) {
-  for (const [re, fam, hex] of COLOR_FAMILIES) if (re.test(color)) return { family: fam, hex };
-  return { family: undefined, hex: "#64748B" };
+  const exact = EXACT_HEX[color.toLowerCase()];
+  for (const [re, fam, hex] of COLOR_FAMILIES) if (re.test(color)) return { family: fam, hex: exact ?? hex };
+  return { family: undefined, hex: exact ?? "#64748B" };
 }
 
 function parseTitle(title, brand) {

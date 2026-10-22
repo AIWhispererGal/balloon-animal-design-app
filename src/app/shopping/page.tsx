@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { ArrowLeft, Copy, FileDown, Plus, Save, ShoppingCart, Trash2 } from "lucide-react";
+import { ArrowLeft, Copy, FileDown, Plus, RefreshCw, Save, ShoppingCart, Trash2 } from "lucide-react";
 import catalogJson from "@/data/balloonCatalog.json";
 import {
   Catalog,
@@ -15,7 +15,7 @@ import {
   recipeToJson,
   round2,
 } from "@/lib/recipeMath";
-import { deleteRecipe, listRecipes, saveRecipe, takeRecipeHandoff } from "@/lib/recipeStorage";
+import { RecipeHandoff, deleteRecipe, getCurrentDesign, listRecipes, saveRecipe, takeRecipeHandoff } from "@/lib/recipeStorage";
 
 const catalog = catalogJson as Catalog;
 
@@ -27,28 +27,36 @@ function emptyRecipe(): Recipe {
   return { id: newId(), name: "New recipe", lines: [], updatedAt: new Date().toISOString() };
 }
 
-/** Build the starting recipe from a design handed over by the editor, if any. */
-function initialFromHandoff(): { recipe: Recipe; note: string | null } {
-  const h = takeRecipeHandoff();
-  if (!h) return { recipe: emptyRecipe(), note: null };
+const itemById = new Map(catalog.items.map((i) => [i.id, i]));
+
+/** Turn the design open in the editor into a recipe: linked packs exactly, the rest by size and color. */
+function recipeFromDesign(h: RecipeHandoff): { recipe: Recipe; note: string } {
   const unmatched: string[] = [];
+  const guessed: string[] = [];
   const counts = new Map<string, number>();
   h.balloons.forEach((b) => {
-    const item = matchCatalogItem(catalog, b.size, b.colorName);
+    const linked = b.catalogItemId ? itemById.get(b.catalogItemId) : undefined;
+    const item = linked ?? matchCatalogItem(catalog, b.size, b.colorName);
     if (!item) {
       unmatched.push(`${b.size} ${b.colorName}`);
       return;
     }
+    if (!linked) guessed.push(`${b.size} ${b.colorName} → ${item.brand} ${item.color}`);
     counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
   });
   const lines: RecipeLine[] = [];
   counts.forEach((qty, itemId) => lines.push({ itemId, qty }));
-  return {
-    recipe: { id: newId(), name: h.designTitle, lines, updatedAt: new Date().toISOString() },
-    note: unmatched.length
-      ? `Loaded from “${h.designTitle}”. No catalog match for: ${unmatched.join(", ")} — add those by hand.`
-      : `Loaded from “${h.designTitle}”. Check the colors match what you'd actually buy.`,
-  };
+  const parts = [`Recipe for “${h.designTitle}”, the design open in the editor.`];
+  if (guessed.length) parts.push(`Matched by color, not linked to a pack: ${guessed.join("; ")}. Pick packs in the designer's color picker to make these exact.`);
+  if (unmatched.length) parts.push(`No catalog match for: ${unmatched.join(", ")}. Add those by hand.`);
+  return { recipe: { id: newId(), name: h.designTitle, lines, updatedAt: new Date().toISOString() }, note: parts.join(" ") };
+}
+
+/** Starting recipe: the design just handed over, else the design currently open, else empty. */
+function initialFromHandoff(): { recipe: Recipe; note: string | null } {
+  const h = takeRecipeHandoff() ?? getCurrentDesign();
+  if (!h || h.balloons.length === 0) return { recipe: emptyRecipe(), note: null };
+  return recipeFromDesign(h);
 }
 
 const subscribeNoop = () => () => {};
@@ -63,7 +71,18 @@ export default function ShoppingPage() {
 function ShoppingWorkspace() {
   const [initial] = useState(initialFromHandoff);
   const [recipe, setRecipe] = useState<Recipe>(initial.recipe);
-  const [handoffNote] = useState<string | null>(initial.note);
+  const [handoffNote, setHandoffNote] = useState<string | null>(initial.note);
+
+  const reloadFromDesigner = () => {
+    const h = getCurrentDesign();
+    if (!h || h.balloons.length === 0) {
+      setToast("No design is open in the editor.");
+      return;
+    }
+    const r = recipeFromDesign(h);
+    setRecipe(r.recipe);
+    setHandoffNote(r.note);
+  };
   const [saved, setSaved] = useState<Recipe[]>(listRecipes);
   const [anchorId, setAnchorId] = useState<string>("");
   const [anchorPacks, setAnchorPacks] = useState(1);
@@ -279,9 +298,14 @@ function ShoppingWorkspace() {
                   onChange={(e) => setRecipe((r) => touch({ ...r, name: e.target.value }))}
                   className="input w-64 text-sm font-semibold"
                 />
-                <button onClick={() => setRecipe(emptyRecipe())} className="btn btn-ghost btn-xs">
-                  <Plus className="h-3.5 w-3.5" /> New
-                </button>
+                <div className="flex items-center gap-1">
+                  <button onClick={reloadFromDesigner} className="btn btn-secondary btn-xs" title="Rebuild this recipe from the design open in the editor">
+                    <RefreshCw className="h-3.5 w-3.5" /> From designer
+                  </button>
+                  <button onClick={() => setRecipe(emptyRecipe())} className="btn btn-ghost btn-xs">
+                    <Plus className="h-3.5 w-3.5" /> New
+                  </button>
+                </div>
               </div>
 
               {recipe.lines.length === 0 ? (

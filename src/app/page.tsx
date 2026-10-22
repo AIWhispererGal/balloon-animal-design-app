@@ -77,7 +77,7 @@ import {
   saveProject,
 } from "@/lib/designStorage";
 import { AddBalloonRequest } from "@/components/AddBalloonPopover";
-import { setRecipeHandoff } from "@/lib/recipeStorage";
+import { setCurrentDesign, setRecipeHandoff } from "@/lib/recipeStorage";
 
 export default function BalloonAppPage() {
   const router = useRouter();
@@ -655,10 +655,12 @@ export default function BalloonAppPage() {
     const tail = Math.round((defaultTailInches(req.size) + 1.6) * 4) / 4;
     const newBal: BalloonSpec = {
       id: newBalId,
-      name: `${req.colorName} ${req.size}`,
+      name: `${req.brand ? `${req.brand} ` : ""}${req.colorName} ${req.size}`,
       size: req.size,
       color: req.colorHex,
       colorName: req.colorName,
+      brand: req.brand,
+      catalogItemId: req.catalogItemId,
       inflatedLengthInches: 60 - tail,
       tailLengthInches: tail,
       tailFingers: Math.round((tail / 0.8) * 10) / 10,
@@ -701,9 +703,13 @@ export default function BalloonAppPage() {
   };
 
   const handleUpdateBalloon = (balloonId: string, updated: Partial<BalloonSpec>) => {
-    const updatedBalloons = currentDesign.balloons.map((b) =>
-      b.id === balloonId ? { ...b, ...updated } : b
-    );
+    const updatedBalloons = currentDesign.balloons.map((b) => {
+      if (b.id !== balloonId) return b;
+      const next = { ...b, ...updated };
+      // A linked catalog pack is size-specific; changing the size unlinks it
+      if (updated.size && updated.size !== b.size && !("catalogItemId" in updated)) next.catalogItemId = undefined;
+      return next;
+    });
     const updatedBubbles = currentDesign.bubbles.map((b) => {
       if (b.balloonId !== balloonId) return b;
       return {
@@ -745,6 +751,32 @@ export default function BalloonAppPage() {
     }));
     showToast("Saved step note.");
   };
+
+  /* ---------------- whole-sculpture orientation ---------------- */
+
+  const handleSetOrientation = useCallback(
+    (orientation: [number, number, number] | undefined) => {
+      setDesignTierMap((prev) => ({
+        ...prev,
+        [activeComplexity]: { ...prev[activeComplexity], orientation },
+      }));
+    },
+    [activeComplexity]
+  );
+
+  // Keep the shopping page's "current design" recipe in sync with what is open here
+  useEffect(() => {
+    setCurrentDesign({
+      designTitle: currentDesign.title,
+      balloons: currentDesign.balloons.map((b) => ({
+        size: b.size,
+        colorName: b.colorName,
+        name: b.name,
+        hex: b.color,
+        catalogItemId: b.catalogItemId,
+      })),
+    });
+  }, [currentDesign.title, currentDesign.balloons]);
 
   /* ---------------- keyboard ---------------- */
 
@@ -1007,6 +1039,8 @@ export default function BalloonAppPage() {
                   onUpdateBalloon={handleUpdateBalloon}
                   activeBalloonId={activeBalloonId}
                   onSetActiveBalloon={setActiveBalloonId}
+                  orientation={currentDesign.orientation}
+                  onSetOrientation={handleSetOrientation}
                   onApplyAutoFix={handleApplyAutoFix}
                   onAutoStabilizeAll={handleAutoStabilizeAll}
                   showLabels={showLabels}
@@ -1079,6 +1113,7 @@ export default function BalloonAppPage() {
                       colorName: b.colorName,
                       name: b.name,
                       hex: b.color,
+                      catalogItemId: b.catalogItemId,
                     })),
                   });
                   router.push("/shopping");

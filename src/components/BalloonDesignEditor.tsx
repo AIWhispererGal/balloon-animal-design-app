@@ -365,8 +365,13 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                         size="sm"
                         align="right"
                         value={selectedBalloon.color}
-                        valueName={selectedBalloon.colorName}
-                        onChange={(hex, name) => onUpdateBalloon(selectedBalloon.id, { color: hex, colorName: name })}
+                        valueName={selectedBalloon.brand ? `${selectedBalloon.brand} ${selectedBalloon.colorName}` : selectedBalloon.colorName}
+                        balloonSize={selectedBalloon.size}
+                        catalogItemId={selectedBalloon.catalogItemId}
+                        onPickCatalogItem={(item) =>
+                          onUpdateBalloon(selectedBalloon.id, { color: item.hex ?? selectedBalloon.color, colorName: item.color, brand: item.brand, catalogItemId: item.id })
+                        }
+                        onChange={(hex, name) => onUpdateBalloon(selectedBalloon.id, { color: hex, colorName: name, brand: undefined, catalogItemId: undefined })}
                       />
                     </div>
                   )}
@@ -542,9 +547,19 @@ export const BalloonDesignEditor: React.FC<BalloonDesignEditorProps> = ({
                       <ColorPicker
                         size="sm"
                         value={bal.color}
-                        valueName={bal.colorName}
-                        onChange={(hex, name) => onUpdateBalloon(bal.id, { color: hex, colorName: name })}
+                        valueName={bal.brand ? `${bal.brand} ${bal.colorName}` : bal.colorName}
+                        balloonSize={bal.size}
+                        catalogItemId={bal.catalogItemId}
+                        onPickCatalogItem={(item) =>
+                          onUpdateBalloon(bal.id, { color: item.hex ?? bal.color, colorName: item.color, brand: item.brand, catalogItemId: item.id })
+                        }
+                        onChange={(hex, name) => onUpdateBalloon(bal.id, { color: hex, colorName: name, brand: undefined, catalogItemId: undefined })}
                       />
+                      {bal.catalogItemId ? (
+                        <div className="mt-1 text-[11px] text-emerald-300">Linked to a catalog pack</div>
+                      ) : (
+                        <div className="mt-1 text-[11px] text-slate-500">Pick from the catalog to price it exactly</div>
+                      )}
                     </div>
                     <div>
                       <label className="label">Uninflated tail</label>
